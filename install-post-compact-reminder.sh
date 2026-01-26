@@ -928,7 +928,8 @@ test_hook() {
     test_result=$(echo '{"session_id": "test", "source": "compact"}' | \
         "$script_path" 2>/dev/null || true)
 
-    if echo "$test_result" | grep -q "post-compact-reminder" 2>/dev/null; then
+    # Check for key phrases that should appear in any valid reminder message
+    if echo "$test_result" | grep -qE "(AGENTS\.md|compacted|IMPORTANT)" 2>/dev/null; then
         return 0
     else
         return 1
