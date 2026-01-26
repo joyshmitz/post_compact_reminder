@@ -101,12 +101,12 @@ BANNER_TL='╔' BANNER_TR='╗' BANNER_BL='╚' BANNER_BR='╝'
 BANNER_H='═' BANNER_V='║'
 
 # Icons and glyphs
-ICON_INFO='ℹ'
-ICON_WARN='⚠'
-ICON_ERROR='✖'
-ICON_STEP='▸'
-ICON_SUCCESS='✔'
-ICON_SKIP='○'
+ICON_INFO='ℹ️'
+ICON_WARN='⚠️'
+ICON_ERROR='❌'
+ICON_STEP='🔧'
+ICON_SUCCESS='✅'
+ICON_SKIP='⏭️'
 ICON_ZAP='⚡'
 
 BULLET='•'
@@ -330,7 +330,7 @@ print_banner() {
     [[ "$QUIET" == "true" ]] && return
     local -a lines=(
         ""
-        "post-compact-reminder v${VERSION}"
+        "🧠 post-compact-reminder v${VERSION}"
         ""
         "\"We stop your bot from going on a post-compaction rampage.\""
         ""
@@ -1042,11 +1042,11 @@ do_status() {
 
     print_banner
 
-    echo -e "${WHITE}${BOLD}${UNDERLINE}Installation Status${NC}"
+    echo -e "  ${WHITE}${BOLD}${UNDERLINE}📊 Installation Status${NC}"
     echo ""
 
     # Check script
-    echo -e "  ${CYAN}${BOLD}Hook Script:${NC}"
+    echo -e "  ${CYAN}${BOLD}📜 Hook Script:${NC}"
     if [[ -f "$script_path" ]]; then
         local installed_version
         installed_version=$(get_installed_version "$script_path")
@@ -1066,7 +1066,7 @@ do_status() {
     echo ""
 
     # Check settings
-    echo -e "  ${CYAN}${BOLD}Settings Configuration:${NC}"
+    echo -e "  ${CYAN}${BOLD}⚙️  Settings Configuration:${NC}"
     if [[ -f "$settings_file" ]]; then
         echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Settings file exists at ${WHITE}$settings_file${NC}"
         if [[ "$HAS_PYTHON" == "true" ]]; then
@@ -1087,7 +1087,7 @@ do_status() {
     echo ""
 
     # Check dependencies
-    echo -e "  ${CYAN}${BOLD}Dependencies:${NC}"
+    echo -e "  ${CYAN}${BOLD}📦 Dependencies:${NC}"
     if [[ "$HAS_JQ" == "true" ]]; then
         echo -e "    ${GREEN}${ICON_SUCCESS}${NC} jq: $(jq --version 2>/dev/null || echo 'installed')"
     else
@@ -1102,7 +1102,7 @@ do_status() {
 
     # Test hook if installed
     if [[ -x "$script_path" ]]; then
-        echo -e "  ${CYAN}${BOLD}Hook Test:${NC}"
+        echo -e "  ${CYAN}${BOLD}🧪 Hook Test:${NC}"
         if test_hook "$script_path"; then
             echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Hook responds correctly to compact events"
         else
@@ -1189,7 +1189,7 @@ do_doctor() {
         echo -e "${WHITE}${BOLD}${UNDERLINE}Doctor Results${NC}"
         echo ""
 
-        echo -e "  ${CYAN}${BOLD}Hook Script:${NC}"
+        echo -e "  ${CYAN}${BOLD}📜 Hook Script:${NC}"
         if [[ "$script_exists" == "true" ]]; then
             if [[ "$script_executable" == "true" ]]; then
                 echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Installed and executable: ${WHITE}$script_path${NC}"
@@ -2328,12 +2328,12 @@ print_summary() {
 
     echo ""
     if [[ "$dry_run" == "true" ]]; then
-        print_box "box" "" "${BLUE}${BOLD}" "${BLUE}${BOLD}" 62 "DRY RUN ${EM_DASH} No changes were made"
+        print_box "box" "" "${BLUE}${BOLD}" "${BLUE}${BOLD}" 62 "📋 DRY RUN ${EM_DASH} No changes were made"
     else
-        print_box "box" "" "${GREEN}${BOLD}" "${GREEN}${BOLD}" 62 "Installation complete!"
+        print_box "box" "" "${GREEN}${BOLD}" "${GREEN}${BOLD}" 62 "🎉 Installation complete!"
     fi
     echo ""
-    echo -e "${WHITE}${BOLD}${UNDERLINE}What Claude sees after compaction:${NC}"
+    echo -e "  ${WHITE}${BOLD}${UNDERLINE}👁️  What Claude sees after compaction:${NC}"
     echo ""
     local -a message_lines
     if [[ "$dry_run" == "true" ]]; then
@@ -2355,7 +2355,7 @@ print_summary() {
         echo ""
 
         # Customization section
-        echo -e "${WHITE}${BOLD}${UNDERLINE}Customizing the reminder:${NC}"
+        echo -e "  ${WHITE}${BOLD}${UNDERLINE}🎨 Customizing the reminder:${NC}"
         echo ""
         echo -e "  The reminder message can be easily customized to fit your workflow."
         echo -e "  Use the CLI to update the message without editing files."
