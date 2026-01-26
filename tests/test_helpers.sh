@@ -22,17 +22,24 @@ TAP_OUTPUT=false
 # -----------------------------------------------------------------------------
 
 setup_test_env() {
+    # Disable errexit inherited from the sourced installer so that
+    # failed assertions do not abort the test script immediately.
+    set +e
+
+    # Ensure cleanup runs even on unexpected exit
+    trap cleanup_test_env EXIT
+
     # Create a unique temp directory for this test run
     TEST_TEMP_DIR=$(mktemp -d -t pcr-test-XXXXXX)
-    
+
     # Mock HOME and other environments
     export HOME="$TEST_TEMP_DIR/home"
     export HOOK_DIR="$TEST_TEMP_DIR/home/.local/bin"
     export SETTINGS_DIR="$TEST_TEMP_DIR/home/.claude"
     export TMPDIR="$TEST_TEMP_DIR/tmp"
-    
+
     mkdir -p "$HOME" "$HOOK_DIR" "$SETTINGS_DIR" "$TMPDIR"
-    
+
     # Mock settings.json
     echo '{}' > "$SETTINGS_DIR/settings.json"
 }
@@ -50,7 +57,9 @@ cleanup_test_env() {
 log_test() {
     local status="$1"
     local message="$2"
-    
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
     case "$status" in
         PASS)
             TESTS_PASSED=$((TESTS_PASSED + 1))
@@ -79,7 +88,7 @@ log_test() {
     esac
 }
 
-print_summary() {
+print_test_summary() {
     echo ""
     echo "------------------------------------------------"
     echo "Test Summary"
@@ -101,7 +110,6 @@ print_summary() {
 # -----------------------------------------------------------------------------
 
 assert_equals() {
-    TESTS_RUN=$((TESTS_RUN + 1))
     local expected="$1"
     local actual="$2"
     local message="${3:-Expected '$expected', got '$actual'}"
@@ -118,7 +126,6 @@ assert_equals() {
 }
 
 assert_contains() {
-    TESTS_RUN=$((TESTS_RUN + 1))
     local haystack="$1"
     local needle="$2"
     local message="${3:-String should contain '$needle'}"
@@ -135,7 +142,6 @@ assert_contains() {
 }
 
 assert_file_exists() {
-    TESTS_RUN=$((TESTS_RUN + 1))
     local file="$1"
     local message="${2:-File should exist: $file}"
     
@@ -149,7 +155,6 @@ assert_file_exists() {
 }
 
 assert_exit_code() {
-    TESTS_RUN=$((TESTS_RUN + 1))
     local expected="$1"
     local actual="$2"
     local message="${3:-Exit code should be $expected}"

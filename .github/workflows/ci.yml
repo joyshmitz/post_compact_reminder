@@ -49,6 +49,33 @@ jobs:
       - name: Check installer syntax
         run: bash -n install-post-compact-reminder.sh
 
+  test-suite:
+    name: Test Suite (${{ matrix.os }})
+    needs: [shellcheck, syntax]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          if [[ "$(uname)" == "Darwin" ]]; then
+            brew install jq 2>/dev/null || true
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          fi
+
+      - name: Make scripts executable
+        run: chmod +x install-post-compact-reminder.sh
+
+      - name: Run Test Suite
+        run: bash tests/run_all_tests.sh
+
   install-test:
     name: Installation Test (${{ matrix.os }})
     needs: [shellcheck, syntax]

@@ -112,4 +112,4 @@ export PATH="$ORIG_PATH"
 unset -f command
 
 cleanup_test_env
-print_summary
+print_test_summary

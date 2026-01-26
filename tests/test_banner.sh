@@ -52,4 +52,4 @@ else
 fi
 
 cleanup_test_env
-print_summary
+print_test_summary

@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.3"
+VERSION="1.2.4"
 SCRIPT_NAME="claude-post-compact-reminder"
 LOCK_FILE="${TMPDIR:-/tmp}/.post-compact-reminder-install-${USER:-$(id -u)}.lock"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh"
@@ -32,6 +32,7 @@ GITHUB_RELEASES_URL="https://github.com/Dicklesworthstone/post_compact_reminder/
 GITHUB_API_URL="https://api.github.com/repos/Dicklesworthstone/post_compact_reminder/releases/latest"
 
 # Changelog (newest first)
+CHANGELOG_1_2_4="UI alignment polish (auto-sized boxes), new --update-reminder-message CLI, and safer non-interactive behavior (TTY guard + auto no-color/no-unicode). Show-template now renders the actual installed message."
 CHANGELOG_1_2_3="Security hardening: Escaped special characters in generated hook script to prevent potential code injection from custom messages."
 CHANGELOG_1_2_2="Fixed lock file permission issues in multi-user environments. Improved regex precision for Bash-based JSON parsing fallback. Added cleanup for temporary files on failure."
 CHANGELOG_1_2_1="Added pure Bash fallback for JSON parsing in hook (removing runtime jq dependency). Added symlink resolution for settings.json to support dotfile managers."
@@ -45,7 +46,7 @@ CHANGELOG_1_0_0="Initial release with basic install/uninstall, dry-run, force re
 cleanup() {
     rm -f "$LOCK_FILE" 2>/dev/null || true
 }
-trap cleanup EXIT
+# Trap moved to main() to allow sourcing for tests
 
 append_exit_trap() {
     local new_cmd="$1"
@@ -106,9 +107,6 @@ ICON_ERROR='✖'
 ICON_STEP='▸'
 ICON_SUCCESS='✔'
 ICON_SKIP='○'
-ICON_DRYRUN='📋'
-ICON_SPARKLES='✨'
-ICON_BANNER='🔄'
 ICON_ZAP='⚡'
 
 BULLET='•'
@@ -176,14 +174,47 @@ apply_no_unicode() {
     ICON_STEP='>'
     ICON_SUCCESS='+'
     ICON_SKIP='.'
-    ICON_DRYRUN='*'
-    ICON_SPARKLES='*'
-    ICON_BANNER='*'
     ICON_ZAP='!'
     BULLET='*'
     ARROW='->'
     EM_DASH='-'
     set_box_ascii
+}
+
+auto_output_mode() {
+    local no_color="false"
+    local no_unicode="false"
+
+    if [[ -n "${NO_COLOR:-}" ]]; then
+        no_color="true"
+    fi
+    if [[ -n "${NO_UNICODE:-}" ]]; then
+        no_unicode="true"
+    fi
+    if [[ ! -t 1 || "${TERM:-}" == "dumb" ]]; then
+        no_color="true"
+        no_unicode="true"
+    fi
+
+    if [[ "$no_unicode" == "true" ]]; then
+        apply_no_unicode
+    fi
+    if [[ "$no_color" == "true" ]]; then
+        apply_no_color
+    fi
+}
+
+require_tty() {
+    local hint="${1:-}"
+    if [[ ! -t 0 ]]; then
+        if [[ -n "$hint" ]]; then
+            log_error "Interactive input requires a TTY. $hint"
+        else
+            log_error "Interactive input requires a TTY."
+        fi
+        return 1
+    fi
+    return 0
 }
 
 repeat_char() {
@@ -195,6 +226,83 @@ repeat_char() {
         out+="$ch"
     done
     printf '%s' "$out"
+}
+
+split_lines() {
+    local input="$1"
+    local -n out_ref="$2"
+    out_ref=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        out_ref+=("$line")
+    done <<< "$input"
+}
+
+prompt_message() {
+    require_tty "Use --update-reminder-message \"...\" or --update-reminder-message-file <file>." || return 1
+    local message=""
+    echo -e "${CYAN}${BOLD}Enter the new reminder message.${NC}"
+    echo -e "${DIM}Finish with a single line containing .done (or press Ctrl-D).${NC}"
+    local line
+    while IFS= read -r line; do
+        if [[ "$line" == ".done" ]]; then
+            break
+        fi
+        message+="$line"$'\n'
+    done
+    message="${message%$'\n'}"
+    printf '%s' "$message"
+}
+
+print_box() {
+    local style="$1"
+    local indent="$2"
+    local border_color="$3"
+    local text_color="$4"
+    shift 4
+    local min_width=0
+    if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+        min_width="$1"
+        shift
+    fi
+    local -a lines=("$@")
+
+    local tl tr bl br h v
+    if [[ "$style" == "banner" ]]; then
+        tl="$BANNER_TL"
+        tr="$BANNER_TR"
+        bl="$BANNER_BL"
+        br="$BANNER_BR"
+        h="$BANNER_H"
+        v="$BANNER_V"
+    else
+        tl="$BOX_TL"
+        tr="$BOX_TR"
+        bl="$BOX_BL"
+        br="$BOX_BR"
+        h="$BOX_H"
+        v="$BOX_V"
+    fi
+
+    local max=0
+    local line len
+    for line in "${lines[@]}"; do
+        len=${#line}
+        if (( len > max )); then
+            max=$len
+        fi
+    done
+    if (( min_width > max )); then
+        max=$min_width
+    fi
+
+    local hline
+    hline=$(repeat_char "$h" $((max + 2)))
+    printf "%s%s%s%s\n" "$indent" "${border_color}${tl}" "$hline" "${tr}${NC}"
+    for line in "${lines[@]}"; do
+        printf "%s%s${text_color} %-${max}s ${NC}%s\n" \
+            "$indent" "${border_color}${v}${NC}" "$line" "${border_color}${v}${NC}"
+    done
+    printf "%s%s%s%s\n" "$indent" "${border_color}${bl}" "$hline" "${br}${NC}"
 }
 
 # -----------------------------------------------------------------------------
@@ -222,16 +330,15 @@ TEMPLATE_DEFAULT="Context was just compacted. Please reread AGENTS.md to refresh
 # -----------------------------------------------------------------------------
 print_banner() {
     [[ "$QUIET" == "true" ]] && return
-    local banner_line
-    banner_line=$(repeat_char "$BANNER_H" 62)
+    local -a lines=(
+        ""
+        "post-compact-reminder v${VERSION}"
+        ""
+        "\"We stop your bot from going on a post-compaction rampage.\""
+        ""
+    )
     echo ""
-    echo -e "${CYAN}${BOLD}${BANNER_TL}${banner_line}${BANNER_TR}${NC}"
-    echo -e "${CYAN}${BOLD}${BANNER_V}${NC}                                                              ${CYAN}${BOLD}${BANNER_V}${NC}"
-    echo -e "${CYAN}${BOLD}${BANNER_V}${NC}  ${ICON_BANNER} ${WHITE}${BOLD}post-compact-reminder${NC} ${DIM}v${VERSION}${NC}                             ${CYAN}${BOLD}${BANNER_V}${NC}"
-    echo -e "${CYAN}${BOLD}${BANNER_V}${NC}                                                              ${CYAN}${BOLD}${BANNER_V}${NC}"
-    echo -e "${CYAN}${BOLD}${BANNER_V}${NC} ${DIM}${ITALIC}\"We stop your bot from going on a post-compaction rampage.\"${NC} ${CYAN}${BOLD}${BANNER_V}${NC}"
-    echo -e "${CYAN}${BOLD}${BANNER_V}${NC}                                                              ${CYAN}${BOLD}${BANNER_V}${NC}"
-    echo -e "${CYAN}${BOLD}${BANNER_BL}${banner_line}${BANNER_BR}${NC}"
+    print_box "banner" "" "${CYAN}${BOLD}" "${WHITE}${BOLD}" 62 "${lines[@]}"
     echo ""
 }
 
@@ -262,6 +369,8 @@ show_help() {
     echo -e "  ${GREEN}--template${NC} ${MAGENTA}<name>${NC}    Apply preset template (minimal|detailed|checklist|default)"
     echo -e "  ${GREEN}--message${NC} ${MAGENTA}<text>${NC}     Use a custom reminder message (single-line)"
     echo -e "  ${GREEN}--message-file${NC} ${MAGENTA}<file>${NC} Use a custom reminder message from a file"
+    echo -e "  ${GREEN}--update-reminder-message${NC} ${MAGENTA}[text]${NC} Update message (prompt if no text)"
+    echo -e "  ${GREEN}--update-reminder-message-file${NC} ${MAGENTA}<file>${NC} Update message from a file"
     echo -e "  ${GREEN}--show-template${NC}       Show currently installed reminder message"
     echo ""
     echo -e "${CYAN}${BOLD}${UNDERLINE}DIAGNOSTIC OPTIONS${NC}"
@@ -799,6 +908,53 @@ test_hook() {
 }
 
 # -----------------------------------------------------------------------------
+# Extract rendered message from hook output
+# -----------------------------------------------------------------------------
+extract_message_lines() {
+    local output="$1"
+    local in_message="false"
+    local line
+    while IFS= read -r line; do
+        if [[ "$line" == "<post-compact-reminder>" ]]; then
+            in_message="true"
+            continue
+        fi
+        if [[ "$line" == "</post-compact-reminder>" ]]; then
+            break
+        fi
+        if [[ "$in_message" == "true" ]]; then
+            printf '%s\n' "$line"
+        fi
+    done <<< "$output"
+}
+
+get_rendered_message_lines() {
+    local script_path="$1"
+    if [[ ! -f "$script_path" ]]; then
+        printf '%s\n' "$TEMPLATE_DEFAULT"
+        return 1
+    fi
+
+    local -a cmd=("$script_path")
+    if [[ ! -x "$script_path" ]]; then
+        cmd=("bash" "$script_path")
+    fi
+
+    local output=""
+    output=$(echo '{"session_id": "render", "source": "compact"}' | \
+        "${cmd[@]}" 2>/dev/null || true)
+
+    local -a lines=()
+    mapfile -t lines < <(extract_message_lines "$output")
+    if [[ ${#lines[@]} -eq 0 ]]; then
+        printf '%s\n' "$TEMPLATE_DEFAULT"
+        return 1
+    fi
+    printf '%s\n' "${lines[@]}"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # JSON helpers
 # -----------------------------------------------------------------------------
 json_escape() {
@@ -1144,6 +1300,7 @@ do_restore() {
 
     # Confirm unless --yes
     if [[ "$YES_FLAG" != "true" ]]; then
+        require_tty "Use --yes to skip confirmation." || return 1
         echo -e "${YELLOW}Restore settings.json from backup?${NC} [y/N] "
         read -r response
         if [[ ! "$response" =~ ^[Yy]$ ]]; then
@@ -1218,6 +1375,7 @@ do_interactive() {
     local script_path="${hook_dir}/${SCRIPT_NAME}"
 
     # Note: banner already printed by main()
+    require_tty "Use --template, --message, or --message-file for non-interactive usage." || return 1
 
     echo -e "${WHITE}${BOLD}${UNDERLINE}Interactive Setup${NC}"
     echo ""
@@ -1269,13 +1427,13 @@ do_interactive() {
     echo ""
     echo -e "${WHITE}${BOLD}Preview:${NC}"
     echo ""
-    echo -e "  ${MAGENTA}${BOX_TL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_TR}${NC}"
-    echo -e "  ${MAGENTA}${BOX_V}${NC} ${CYAN}<post-compact-reminder>${NC}"
-    echo "$chosen_message" | while IFS= read -r line; do
-        printf "  ${MAGENTA}${BOX_V}${NC} %s\n" "$line"
-    done
-    echo -e "  ${MAGENTA}${BOX_V}${NC} ${CYAN}</post-compact-reminder>${NC}"
-    echo -e "  ${MAGENTA}${BOX_BL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_BR}${NC}"
+    local -a message_lines
+    local -a preview_lines
+    split_lines "$chosen_message" message_lines
+    preview_lines=("<post-compact-reminder>")
+    preview_lines+=("${message_lines[@]}")
+    preview_lines+=("</post-compact-reminder>")
+    print_box "box" "  " "${MAGENTA}" "" 57 "${preview_lines[@]}"
     echo ""
 
     echo -n "Install with this message? [Y/n]: "
@@ -1303,7 +1461,6 @@ do_interactive() {
     echo ""
     log_step "Creating directories..."
     mkdir -p "$hook_dir"
-    mkdir -p "$settings_dir"
     mkdir -p "$settings_dir"
 
     log_step "Creating hook script with custom message..."
@@ -1364,22 +1521,12 @@ do_show_template() {
     echo -e "${WHITE}${BOLD}${UNDERLINE}Currently Installed Message${NC}"
     echo ""
 
-    # Extract the message from between <post-compact-reminder> tags
-    local in_message=false
-    while IFS= read -r line; do
-        if [[ "$line" == *"<post-compact-reminder>"* ]]; then
-            in_message=true
-            echo -e "  ${CYAN}<post-compact-reminder>${NC}"
-            continue
-        fi
-        if [[ "$line" == *"</post-compact-reminder>"* ]]; then
-            echo -e "  ${CYAN}</post-compact-reminder>${NC}"
-            break
-        fi
-        if [[ "$in_message" == true ]]; then
-            echo "  $line"
-        fi
-    done < "$script_path"
+    local -a message_lines
+    mapfile -t message_lines < <(get_rendered_message_lines "$script_path")
+    local -a box_lines=("<post-compact-reminder>")
+    box_lines+=("${message_lines[@]}")
+    box_lines+=("</post-compact-reminder>")
+    print_box "box" "  " "${MAGENTA}" "" 57 "${box_lines[@]}"
 
     echo ""
     echo -e "${DIM}File: $script_path${NC}"
@@ -1552,12 +1699,49 @@ do_message() {
 }
 
 # -----------------------------------------------------------------------------
+# Update reminder message (convenience wrapper)
+# -----------------------------------------------------------------------------
+do_update_message() {
+    local message_arg="$1"
+    local message_type="$2"
+    local hook_dir="$3"
+    local settings_dir="$4"
+    local dry_run="$5"
+
+    case "$message_type" in
+        inline|file)
+            do_message "$message_arg" "$message_type" "$hook_dir" "$settings_dir" "$dry_run"
+            return $?
+            ;;
+        prompt)
+            local chosen_message=""
+            if ! chosen_message=$(prompt_message); then
+                return 1
+            fi
+            if [[ -z "$chosen_message" ]]; then
+                log_error "Message is empty"
+                return 1
+            fi
+            do_message "$chosen_message" "inline" "$hook_dir" "$settings_dir" "$dry_run"
+            return $?
+            ;;
+        *)
+            log_error "Unknown message type: $message_type"
+            return 1
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
 # Show changelog
 # -----------------------------------------------------------------------------
 do_changelog() {
     print_banner
 
     echo -e "${WHITE}${BOLD}${UNDERLINE}Changelog${NC}"
+    echo ""
+    echo -e "  ${GREEN}${BOLD}v1.2.4${NC}"
+    echo -e "  ${DIM}$CHANGELOG_1_2_4${NC}"
     echo ""
     echo -e "  ${GREEN}${BOLD}v1.2.3${NC}"
     echo -e "  ${DIM}$CHANGELOG_1_2_3${NC}"
@@ -1650,6 +1834,7 @@ do_update() {
 
     # Confirm unless --yes
     if [[ "$YES_FLAG" != "true" ]]; then
+        require_tty "Use --yes to auto-confirm updates." || return 1
         echo -n "Update to $remote_version? [y/N]: "
         read -r response
         if [[ ! "$response" =~ ^[Yy]$ ]]; then
@@ -1798,7 +1983,7 @@ _post_compact_reminder() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    opts="--help -h --version -v --dry-run -n --uninstall --remove --repair --sync --force -f --quiet -q --no-color --no-unicode --plain --status --check --doctor --self-test --json --verbose -V --restore --diff --interactive -i --yes -y --skip-deps --completions --template --message --message-file --show-template --update --changelog --log"
+    opts="--help -h --version -v --dry-run -n --uninstall --remove --repair --sync --force -f --quiet -q --no-color --no-unicode --plain --status --check --doctor --self-test --json --verbose -V --restore --diff --interactive -i --yes -y --skip-deps --completions --template --message --message-file --update-reminder-message --update-reminder-message-file --update-message --update-message-file --show-template --update --changelog --log"
 
     case "$prev" in
         --template)
@@ -1809,7 +1994,7 @@ _post_compact_reminder() {
             COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") )
             return 0
             ;;
-        --message-file)
+        --message-file|--update-reminder-message-file|--update-message-file)
             COMPREPLY=( $(compgen -f -- "$cur") )
             return 0
             ;;
@@ -1872,6 +2057,10 @@ _install_post_compact_reminder() {
         '--template[Apply a preset template]:template:(minimal detailed checklist default)'
         '--message[Use a custom reminder message]:message:'
         '--message-file[Use a custom message from a file]:file:_files'
+        '--update-reminder-message[Update reminder message (prompt if empty)]:message:'
+        '--update-reminder-message-file[Update reminder message from a file]:file:_files'
+        '--update-message[Update reminder message (prompt if empty)]:message:'
+        '--update-message-file[Update reminder message from a file]:file:_files'
         '--show-template[Show current installed message]::'
         '--update[Self-update from GitHub]::'
         '--changelog[Show version history]::'
@@ -2077,6 +2266,7 @@ do_uninstall() {
 
     # Confirmation prompt (skip if --yes or --dry-run)
     if [[ "$YES_FLAG" != "true" ]] && [[ "$dry_run" != "true" ]]; then
+        require_tty "Use --yes to skip confirmation." || return 1
         echo -e "${YELLOW}This will remove:${NC}"
         [[ -f "$script_path" ]] && echo -e "  ${DIM}${BULLET}${NC} $script_path"
         [[ -f "$settings_file" ]] && echo -e "  ${DIM}${BULLET}${NC} Hook entry from $settings_file"
@@ -2136,37 +2326,30 @@ do_uninstall() {
 print_summary() {
     local dry_run="$1"
     local hook_dir="$2"
-    local display_hook_path
-    local default_hook_dir="$HOME/.local/bin"
-    if [[ "$hook_dir" == "$default_hook_dir" ]]; then
-        # shellcheck disable=SC2088  # Intentional: display ~ for readability
-        display_hook_path="~/.local/bin/${SCRIPT_NAME}"
-    else
-        display_hook_path="${hook_dir}/${SCRIPT_NAME}"
-    fi
+    local script_path="${hook_dir}/${SCRIPT_NAME}"
 
     echo ""
     if [[ "$dry_run" == "true" ]]; then
-        echo -e "${BLUE}${BOX_TL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_TR}${NC}"
-        echo -e "${BLUE}${BOX_V}${NC}  ${BLUE}${BOLD}${ICON_DRYRUN} DRY RUN${NC} ${DIM}${ITALIC}${EM_DASH} No changes were made${NC}                           ${BLUE}${BOX_V}${NC}"
-        echo -e "${BLUE}${BOX_BL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_BR}${NC}"
+        print_box "box" "" "${BLUE}${BOLD}" "${BLUE}${BOLD}" 62 "DRY RUN ${EM_DASH} No changes were made"
     else
-        echo -e "${GREEN}${BOX_TL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_TR}${NC}"
-        echo -e "${GREEN}${BOX_V}${NC}  ${GREEN}${BOLD}${ICON_SPARKLES} Installation complete!${NC}                                     ${GREEN}${BOX_V}${NC}"
-        echo -e "${GREEN}${BOX_BL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_BR}${NC}"
+        print_box "box" "" "${GREEN}${BOLD}" "${GREEN}${BOLD}" 62 "Installation complete!"
     fi
     echo ""
     echo -e "${WHITE}${BOLD}${UNDERLINE}What Claude sees after compaction:${NC}"
     echo ""
-    echo -e "  ${MAGENTA}${BOX_TL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_TR}${NC}"
-    echo -e "  ${MAGENTA}${BOX_V}${NC} ${CYAN}<post-compact-reminder>${NC}                                 ${MAGENTA}${BOX_V}${NC}"
-    echo -e "  ${MAGENTA}${BOX_V}${NC}                                                         ${MAGENTA}${BOX_V}${NC}"
-    echo -e "  ${MAGENTA}${BOX_V}${NC} ${WHITE}Context was just compacted. Please reread AGENTS.md${NC}    ${MAGENTA}${BOX_V}${NC}"
-    echo -e "  ${MAGENTA}${BOX_V}${NC} ${WHITE}to refresh your understanding of project conventions${NC}   ${MAGENTA}${BOX_V}${NC}"
-    echo -e "  ${MAGENTA}${BOX_V}${NC} ${WHITE}and agent coordination patterns.${NC}                       ${MAGENTA}${BOX_V}${NC}"
-    echo -e "  ${MAGENTA}${BOX_V}${NC}                                                         ${MAGENTA}${BOX_V}${NC}"
-    echo -e "  ${MAGENTA}${BOX_V}${NC} ${CYAN}</post-compact-reminder>${NC}                                ${MAGENTA}${BOX_V}${NC}"
-    echo -e "  ${MAGENTA}${BOX_BL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_BR}${NC}"
+    local -a message_lines
+    if [[ "$dry_run" == "true" ]]; then
+        message_lines=("$TEMPLATE_DEFAULT")
+    else
+        mapfile -t message_lines < <(get_rendered_message_lines "$script_path")
+        if [[ ${#message_lines[@]} -eq 0 ]]; then
+            message_lines=("$TEMPLATE_DEFAULT")
+        fi
+    fi
+    local -a preview_lines=("<post-compact-reminder>")
+    preview_lines+=("${message_lines[@]}")
+    preview_lines+=("</post-compact-reminder>")
+    print_box "box" "  " "${MAGENTA}" "" 57 "${preview_lines[@]}"
     echo ""
 
     if [[ "$dry_run" != "true" ]]; then
@@ -2177,31 +2360,22 @@ print_summary() {
         echo -e "${WHITE}${BOLD}${UNDERLINE}Customizing the reminder:${NC}"
         echo ""
         echo -e "  The reminder message can be easily customized to fit your workflow."
-        echo -e "  Edit the heredoc inside the hook script to change what Claude sees."
+        echo -e "  Use the CLI to update the message without editing files."
         echo ""
-        echo -e "  ${CYAN}${BOLD}Step 1:${NC} Open the script in your editor"
+        echo -e "  ${CYAN}${BOLD}Step 1:${NC} Update the reminder message"
         echo ""
-        echo -e "    ${WHITE}\$ ${GREEN}nano ${display_hook_path}${NC}"
-        echo -e "    ${DIM}${ITALIC}  or: code, vim, emacs, etc.${NC}"
+        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder.sh --update-reminder-message${NC}"
+        echo -e "    ${DIM}${ITALIC}  Finish with a line containing .done (or Ctrl-D).${NC}"
         echo ""
-        echo -e "  ${CYAN}${BOLD}Step 2:${NC} Find and modify the message block"
+        echo -e "  ${CYAN}${BOLD}Step 2:${NC} Or set it inline"
         echo ""
-        echo -e "  ${DIM}${BOX_TL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_TR}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${GREEN}cat <<'EOF'${NC}                                             ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${CYAN}<post-compact-reminder>${NC}                                 ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${WHITE}${ITALIC}Your custom message here. Ideas:${NC}                        ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC}                                                         ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${WHITE}- Re-read AGENTS.md for project conventions${NC}            ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${WHITE}- Check the task list with /tasks${NC}                      ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${WHITE}- Review recent commits: git log --oneline -5${NC}          ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${WHITE}- Run the test suite before continuing${NC}                 ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${WHITE}- Check for uncommitted changes: git status${NC}            ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC}                                                         ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${CYAN}</post-compact-reminder>${NC}                                ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_V}${NC} ${GREEN}EOF${NC}                                                     ${DIM}${BOX_V}${NC}"
-        echo -e "  ${DIM}${BOX_BL}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_H}${BOX_BR}${NC}"
+        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder.sh --update-reminder-message \"Context compacted. Re-read AGENTS.md.\"${NC}"
         echo ""
-        echo -e "  ${CYAN}${BOLD}Step 3:${NC} Test your changes"
+        echo -e "  ${CYAN}${BOLD}Step 3:${NC} Or load from a file"
+        echo ""
+        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder.sh --update-reminder-message-file ./reminder.txt${NC}"
+        echo ""
+        echo -e "  ${CYAN}${BOLD}Step 4:${NC} Test your changes"
         echo ""
         echo -e "    ${WHITE}\$ ${GREEN}echo '{\"source\":\"compact\"}' | ~/.local/bin/claude-post-compact-reminder${NC}"
         echo ""
@@ -2215,6 +2389,7 @@ print_summary() {
 # Main
 # -----------------------------------------------------------------------------
 main() {
+    trap cleanup EXIT
     local dry_run="false"
     local uninstall="false"
     local force="false"
@@ -2291,6 +2466,28 @@ main() {
                     exit 1
                 fi
                 action="message"
+                action_arg="$2"
+                action_arg_type="file"
+                shift 2
+                ;;
+            --update-reminder-message|--update-message)
+                if [[ -n "${2:-}" && "$2" != -* ]]; then
+                    action="update-message"
+                    action_arg="$2"
+                    action_arg_type="inline"
+                    shift 2
+                else
+                    action="update-message"
+                    action_arg_type="prompt"
+                    shift
+                fi
+                ;;
+            --update-reminder-message-file|--update-message-file)
+                if [[ -z "${2:-}" ]] || [[ "$2" == -* ]]; then
+                    log_error "--update-reminder-message-file requires a file path"
+                    exit 1
+                fi
+                action="update-message"
                 action_arg="$2"
                 action_arg_type="file"
                 shift 2
@@ -2393,6 +2590,9 @@ main() {
         log_verbose "Logging to: $LOG_FILE"
     fi
 
+    # Auto-adjust output when running non-interactively
+    auto_output_mode
+
     # Configuration
     local hook_dir="${HOOK_DIR:-$HOME/.local/bin}"
     local settings_dir="${SETTINGS_DIR:-$HOME/.claude}"
@@ -2460,6 +2660,10 @@ main() {
             ;;
         message)
             do_message "$action_arg" "$action_arg_type" "$hook_dir" "$settings_dir" "$dry_run"
+            exit $?
+            ;;
+        update-message)
+            do_update_message "$action_arg" "$action_arg_type" "$hook_dir" "$settings_dir" "$dry_run"
             exit $?
             ;;
         repair)

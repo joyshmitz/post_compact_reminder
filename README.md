@@ -203,6 +203,9 @@ The installer detects your package manager and offers to auto-install missing de
 ./install-post-compact-reminder.sh --template default    # Apply preset: standard message
 ./install-post-compact-reminder.sh --message "..."       # Custom message (single-line)
 ./install-post-compact-reminder.sh --message-file ./msg.txt  # Custom message from file
+./install-post-compact-reminder.sh --update-reminder-message # Update message interactively (end with .done)
+./install-post-compact-reminder.sh --update-reminder-message "Context compacted. Re-read AGENTS.md."
+./install-post-compact-reminder.sh --update-reminder-message-file ./msg.txt
 ./install-post-compact-reminder.sh --show-template       # Show currently installed message
 ```
 
@@ -233,6 +236,10 @@ The installer detects your package manager and offers to auto-install missing de
 ./install-post-compact-reminder.sh --quiet      # Suppress non-essential output
 ./install-post-compact-reminder.sh --no-color   # Disable ANSI color codes
 ./install-post-compact-reminder.sh --no-unicode # ASCII-only output
+
+Environment overrides:
+- `NO_COLOR=1` disables ANSI colors automatically
+- `NO_UNICODE=1` forces ASCII-only output
 ```
 
 ### Environment Variables
@@ -258,21 +265,30 @@ The installer creates two files:
 
 ```bash
 #!/usr/bin/env bash
-# Version: 1.1.0
+# Version: 1.2.4
 # SessionStart hook: Remind Claude to reread AGENTS.md after compaction
 
 set -e
 
+MESSAGE="Context was just compacted. Please reread AGENTS.md to refresh your understanding
+of project conventions and agent coordination patterns."
+
 INPUT=$(cat)
-SOURCE=$(echo "$INPUT" | jq -r '.source // empty')
+SOURCE=""
+
+if command -v jq &> /dev/null; then
+    SOURCE=$(echo "$INPUT" | jq -r '.source // empty' 2>/dev/null || true)
+else
+    REGEX='(^|[{,])[[:space:]]*"source"[[:space:]]*:[[:space:]]*"compact"'
+    if [[ "$INPUT" =~ $REGEX ]]; then
+        SOURCE="compact"
+    fi
+fi
 
 if [[ "$SOURCE" == "compact" ]]; then
-    cat <<'EOF'
-<post-compact-reminder>
-Context was just compacted. Please reread AGENTS.md to refresh your understanding
-of project conventions and agent coordination patterns.
-</post-compact-reminder>
-EOF
+    printf '%s\n' "<post-compact-reminder>"
+    printf '%s\n' "$MESSAGE"
+    printf '%s\n' "</post-compact-reminder>"
 fi
 
 exit 0

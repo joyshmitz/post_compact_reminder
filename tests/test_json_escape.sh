@@ -33,7 +33,7 @@ assert_equals "$EXPECTED" "$ACTUAL" "Newlines and tabs should be escaped"
 
 # Test 5: Combined
 INPUT=$'Key: "Value"\nPath: C:\\Temp'
-EXPECTED='Key: \"Value\"\nPath: C:\\\\Temp'
+EXPECTED='Key: \"Value\"\nPath: C:\\Temp'
 ACTUAL=$(json_escape "$INPUT")
 assert_equals "$EXPECTED" "$ACTUAL" "Combined special characters should be escaped"
 
@@ -44,4 +44,4 @@ ACTUAL=$(json_escape "$INPUT")
 assert_equals "$EXPECTED" "$ACTUAL" "Empty string should remain empty"
 
 cleanup_test_env
-print_summary
+print_test_summary
