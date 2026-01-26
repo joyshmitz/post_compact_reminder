@@ -14,6 +14,11 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
 
+# Temp directory (initialized in setup_test_env; declared here so cleanup_test_env
+# does not trigger an unbound-variable error under set -u if the EXIT trap fires
+# before setup_test_env finishes).
+TEST_TEMP_DIR=""
+
 # Config
 TAP_OUTPUT=false
 

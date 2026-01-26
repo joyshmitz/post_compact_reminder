@@ -76,7 +76,7 @@ jobs:
           ## Installation
 
           ```bash
-          curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh | bash
+          curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh?cb=$(date +%s)" | bash
           ```
 
           ## Verify Installation (Optional)

@@ -230,10 +230,8 @@ repeat_char() {
 
 split_lines() {
     local input="$1"
-    local -n out_ref="$2"
-    out_ref=()
     while IFS= read -r line || [[ -n "$line" ]]; do
-        out_ref+=("$line")
+        printf '%s\n' "$line"
     done <<< "$input"
 }
 
@@ -1429,7 +1427,7 @@ do_interactive() {
     echo ""
     local -a message_lines
     local -a preview_lines
-    split_lines "$chosen_message" message_lines
+    mapfile -t message_lines < <(split_lines "$chosen_message")
     preview_lines=("<post-compact-reminder>")
     preview_lines+=("${message_lines[@]}")
     preview_lines+=("</post-compact-reminder>")

@@ -19,7 +19,7 @@
 <h3>Quick Install</h3>
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh?cb=$(date +%s)" | bash
 ```
 
 </div>
@@ -116,13 +116,13 @@ The installer validates dependencies, tests the hook after installation, and rep
 ### Quick Install (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh?cb=$(date +%s)" | bash
 ```
 
 ### Download and Run Locally
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh \
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/post_compact_reminder/main/install-post-compact-reminder.sh?cb=$(date +%s)" \
   -o install-post-compact-reminder.sh
 chmod +x install-post-compact-reminder.sh
 ./install-post-compact-reminder.sh
@@ -236,11 +236,23 @@ The installer detects your package manager and offers to auto-install missing de
 ./install-post-compact-reminder.sh --quiet      # Suppress non-essential output
 ./install-post-compact-reminder.sh --no-color   # Disable ANSI color codes
 ./install-post-compact-reminder.sh --no-unicode # ASCII-only output
+```
 
 Environment overrides:
 - `NO_COLOR=1` disables ANSI colors automatically
 - `NO_UNICODE=1` forces ASCII-only output
-```
+
+Automatic output detection:
+- If stdout is not a TTY or `TERM=dumb`, the installer auto-disables colors and Unicode for clean logs.
+
+### Aliases
+
+- `--remove` is the same as `--uninstall`
+- `--sync` is the same as `--repair`
+- `--check` is the same as `--status`
+- `--self-test` is the same as `--doctor`
+- `--plain` is the same as `--no-unicode`
+- `--update-message` / `--update-message-file` are aliases for `--update-reminder-message` / `--update-reminder-message-file`
 
 ### Environment Variables
 
@@ -448,6 +460,8 @@ If `--status` shows everything green but the hook still doesn't fire, restart Cl
 
 ### `jq: command not found`
 
+`jq` is strongly recommended for reliable JSON parsing. The hook falls back to a simple regex if `jq` is missing, but that fallback is less robust and may miss unusual JSON formatting.
+
 ```bash
 # Ubuntu/Debian
 sudo apt install jq
@@ -486,7 +500,7 @@ echo '{"source": "compact"}' | ~/.local/bin/claude-post-compact-reminder
 echo '{"source": "startup"}' | ~/.local/bin/claude-post-compact-reminder
 ```
 
-If the compact test produces no output, check that `jq` is installed and the script has the correct source check.
+If the compact test produces no output, check that the script is executable and that JSON parsing works (installing `jq` improves reliability).
 
 ### Another instance is running
 
@@ -502,7 +516,7 @@ rm /tmp/.post-compact-reminder-install.lock
 
 - **SessionStart hooks are non-blocking.** Claude sees the reminder in its context but isn't *forced* to act on it before proceeding. In practice, Claude reliably follows the instruction to re-read AGENTS.md, but there's no hard enforcement mechanism.
 - **Global only.** The hook installs to `~/.claude/settings.json`, which applies to all projects. There's no per-project override mechanism built in (though you could use `SETTINGS_DIR` to point at a project-local settings file).
-- **Requires `jq` at runtime.** The hook script uses `jq` to parse the JSON input from Claude Code. If `jq` is removed after installation, the hook will silently do nothing.
+- **`jq` recommended, not required.** The hook uses `jq` when available; otherwise it falls back to a simple regex that detects `"source":"compact"`. The fallback is less robust, so keep `jq` installed for best reliability.
 - **No Windows support.** This is a Bash script. It works on Linux, macOS, and WSL.
 
 ---
