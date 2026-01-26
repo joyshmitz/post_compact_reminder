@@ -1147,7 +1147,7 @@ do_restore() {
     cp "$backup_file" "$settings_file"
     log_success "Restored settings.json from backup"
     echo ""
-    echo -e "${YELLOW}Restart Claude Code for changes to take effect.${NC}"
+    echo -e "${YELLOW}${ICON_ZAP} Restart Claude Code for changes to take effect.${NC}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1407,6 +1407,10 @@ do_template() {
     log_info "Applying template: $template_name"
     echo ""
 
+    if ! require_python_for_settings "$dry_run"; then
+        return 1
+    fi
+
     if [[ "$dry_run" == "true" ]]; then
         log_step "[dry-run] Would create $script_path with '$template_name' template"
         echo ""
@@ -1433,26 +1437,22 @@ do_template() {
     fi
 
     # Ensure settings.json is configured
-    if [[ "$HAS_PYTHON" == "true" ]]; then
-        log_step "Updating settings.json..."
-        local settings_file="${settings_dir}/settings.json"
-        local hook_path_for_settings
-        local default_hook_dir="$HOME/.local/bin"
-        if [[ "$hook_dir" == "$default_hook_dir" ]]; then
-            # Use $HOME for portability when using default location
-            hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
-        else
-            # Use absolute path for custom HOOK_DIR
-            hook_path_for_settings="$script_path"
-        fi
-        add_hook_to_settings "$settings_file" "$hook_path_for_settings" "false" > /dev/null
-        log_success "Settings updated"
+    log_step "Updating settings.json..."
+    local settings_file="${settings_dir}/settings.json"
+    local hook_path_for_settings
+    local default_hook_dir="$HOME/.local/bin"
+    if [[ "$hook_dir" == "$default_hook_dir" ]]; then
+        # Use $HOME for portability when using default location
+        hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
     else
-        log_warn "python3 not found; skipping settings.json update"
+        # Use absolute path for custom HOOK_DIR
+        hook_path_for_settings="$script_path"
     fi
+    add_hook_to_settings "$settings_file" "$hook_path_for_settings" "false" > /dev/null
+    log_success "Settings updated"
 
     echo ""
-    echo -e "${YELLOW}⚡ Restart Claude Code for changes to take effect.${NC}"
+    echo -e "${YELLOW}${ICON_ZAP} Restart Claude Code for changes to take effect.${NC}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1496,6 +1496,10 @@ do_message() {
     log_info "Applying custom message"
     echo ""
 
+    if ! require_python_for_settings "$dry_run"; then
+        return 1
+    fi
+
     if [[ "$dry_run" == "true" ]]; then
         log_step "[dry-run] Would create $script_path with custom message"
         echo ""
@@ -1516,22 +1520,17 @@ do_message() {
     chmod +x "$script_path"
     log_success "Created $script_path"
 
-    if [[ "$HAS_PYTHON" == "true" ]]; then
-        log_step "Updating settings.json..."
-        local settings_file="${settings_dir}/settings.json"
-        local hook_path_for_settings
-        local default_hook_dir="$HOME/.local/bin"
-        if [[ "$hook_dir" == "$default_hook_dir" ]]; then
-            hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
-        else
-            hook_path_for_settings="$script_path"
-        fi
-        add_hook_to_settings "$settings_file" "$hook_path_for_settings" "false" > /dev/null
-        log_success "Settings updated"
+    log_step "Updating settings.json..."
+    local settings_file="${settings_dir}/settings.json"
+    local hook_path_for_settings
+    local default_hook_dir="$HOME/.local/bin"
+    if [[ "$hook_dir" == "$default_hook_dir" ]]; then
+        hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
     else
-        log_error "python3 not found; cannot update settings.json"
-        return 1
+        hook_path_for_settings="$script_path"
     fi
+    add_hook_to_settings "$settings_file" "$hook_path_for_settings" "false" > /dev/null
+    log_success "Settings updated"
 
     log_step "Testing hook..."
     if test_hook "$script_path"; then
@@ -1541,7 +1540,7 @@ do_message() {
     fi
 
     echo ""
-    echo -e "${YELLOW}⚡ Restart Claude Code for changes to take effect.${NC}"
+    echo -e "${YELLOW}${ICON_ZAP} Restart Claude Code for changes to take effect.${NC}"
 }
 
 # -----------------------------------------------------------------------------
@@ -2056,8 +2055,8 @@ do_uninstall() {
     # Confirmation prompt (skip if --yes or --dry-run)
     if [[ "$YES_FLAG" != "true" ]] && [[ "$dry_run" != "true" ]]; then
         echo -e "${YELLOW}This will remove:${NC}"
-        [[ -f "$script_path" ]] && echo -e "  ${DIM}•${NC} $script_path"
-        [[ -f "$settings_file" ]] && echo -e "  ${DIM}•${NC} Hook entry from $settings_file"
+        [[ -f "$script_path" ]] && echo -e "  ${DIM}${BULLET}${NC} $script_path"
+        [[ -f "$settings_file" ]] && echo -e "  ${DIM}${BULLET}${NC} Hook entry from $settings_file"
         echo ""
         echo -n -e "${BOLD}Are you sure you want to uninstall? [y/N]${NC} "
         read -r response
@@ -2104,7 +2103,7 @@ do_uninstall() {
     else
         log_success "Uninstall complete"
         echo ""
-        echo -e "${YELLOW}Restart Claude Code for changes to take effect.${NC}"
+        echo -e "${YELLOW}${ICON_ZAP} Restart Claude Code for changes to take effect.${NC}"
     fi
 }
 
@@ -2148,7 +2147,7 @@ print_summary() {
     echo ""
 
     if [[ "$dry_run" != "true" ]]; then
-        echo -e "  ${YELLOW}⚡ ${ITALIC}Restart Claude Code for the hook to take effect.${NC}"
+        echo -e "  ${YELLOW}${ICON_ZAP} ${ITALIC}Restart Claude Code for the hook to take effect.${NC}"
         echo ""
 
         # Customization section
