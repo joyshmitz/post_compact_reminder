@@ -190,6 +190,7 @@ The installer detects your package manager and offers to auto-install missing de
 ./install-post-compact-reminder.sh --yes         # Skip confirmation prompts
 ./install-post-compact-reminder.sh --skip-deps   # Do not auto-install missing dependencies
 ./install-post-compact-reminder.sh --uninstall   # Remove hook and settings entry
+./install-post-compact-reminder.sh --repair      # Repair installation and sync settings
 ```
 
 ### Customization
@@ -210,6 +211,7 @@ The installer detects your package manager and offers to auto-install missing de
 ```bash
 ./install-post-compact-reminder.sh --status     # Full health check (script, settings, deps, hook test)
 ./install-post-compact-reminder.sh --status --json  # JSON status output for automation
+./install-post-compact-reminder.sh --doctor     # Run hook self-tests
 ./install-post-compact-reminder.sh --diff       # Compare installed vs. available version
 ./install-post-compact-reminder.sh --verbose    # Enable debug output during any operation
 ./install-post-compact-reminder.sh --log out.log  # Log all operations to file
@@ -230,6 +232,7 @@ The installer detects your package manager and offers to auto-install missing de
 ```bash
 ./install-post-compact-reminder.sh --quiet      # Suppress non-essential output
 ./install-post-compact-reminder.sh --no-color   # Disable ANSI color codes
+./install-post-compact-reminder.sh --no-unicode # ASCII-only output
 ```
 
 ### Environment Variables

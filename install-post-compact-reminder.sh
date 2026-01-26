@@ -252,6 +252,7 @@ show_help() {
     echo -e "  ${GREEN}--version${NC}, ${GREEN}-v${NC}         Show version number"
     echo -e "  ${GREEN}--dry-run${NC}, ${GREEN}-n${NC}         Preview changes without modifying anything"
     echo -e "  ${GREEN}--uninstall${NC}, ${GREEN}--remove${NC}  Remove the hook and settings entry"
+    echo -e "  ${GREEN}--repair${NC}, ${GREEN}--sync${NC}       Repair installation and sync settings"
     echo -e "  ${GREEN}--force${NC}, ${GREEN}-f${NC}           Reinstall even if already at latest version"
     echo -e "  ${GREEN}--yes${NC}, ${GREEN}-y${NC}             Skip confirmation prompts"
     echo -e "  ${GREEN}--skip-deps${NC}          Do not auto-install missing dependencies"
@@ -265,7 +266,8 @@ show_help() {
     echo ""
     echo -e "${CYAN}${BOLD}${UNDERLINE}DIAGNOSTIC OPTIONS${NC}"
     echo -e "  ${GREEN}--status${NC}, ${GREEN}--check${NC}     Show installation health and configuration"
-    echo -e "  ${GREEN}--json${NC}                Output status as JSON (use with --status)"
+    echo -e "  ${GREEN}--doctor${NC}, ${GREEN}--self-test${NC} Run hook self-tests"
+    echo -e "  ${GREEN}--json${NC}                Output status/doctor as JSON"
     echo -e "  ${GREEN}--diff${NC}                Show changes between installed and new version"
     echo -e "  ${GREEN}--verbose${NC}, ${GREEN}-V${NC}        Enable verbose/debug output"
     echo -e "  ${GREEN}--log${NC} ${MAGENTA}<file>${NC}         Log all operations to specified file"
@@ -279,6 +281,7 @@ show_help() {
     echo -e "${CYAN}${BOLD}${UNDERLINE}OUTPUT OPTIONS${NC}"
     echo -e "  ${GREEN}--quiet${NC}, ${GREEN}-q${NC}           Suppress non-essential output"
     echo -e "  ${GREEN}--no-color${NC}            Disable colored output"
+    echo -e "  ${GREEN}--no-unicode${NC}, ${GREEN}--plain${NC}  Use ASCII-only output"
     echo ""
     echo -e "${CYAN}${BOLD}${UNDERLINE}ENVIRONMENT VARIABLES${NC}"
     echo -e "  ${MAGENTA}HOOK_DIR${NC}              Override hook script location ${DIM}(default: ~/.local/bin)${NC}"
@@ -1556,6 +1559,15 @@ do_changelog() {
 
     echo -e "${WHITE}${BOLD}${UNDERLINE}Changelog${NC}"
     echo ""
+    echo -e "  ${GREEN}${BOLD}v1.2.3${NC}"
+    echo -e "  ${DIM}$CHANGELOG_1_2_3${NC}"
+    echo ""
+    echo -e "  ${GREEN}${BOLD}v1.2.2${NC}"
+    echo -e "  ${DIM}$CHANGELOG_1_2_2${NC}"
+    echo ""
+    echo -e "  ${GREEN}${BOLD}v1.2.1${NC}"
+    echo -e "  ${DIM}$CHANGELOG_1_2_1${NC}"
+    echo ""
     echo -e "  ${GREEN}${BOLD}v1.2.0${NC}"
     echo -e "  ${DIM}$CHANGELOG_1_2_0${NC}"
     echo ""
@@ -1786,7 +1798,7 @@ _post_compact_reminder() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    opts="--help -h --version -v --dry-run -n --uninstall --remove --force -f --quiet -q --no-color --status --check --json --verbose -V --restore --diff --interactive -i --yes -y --skip-deps --completions --template --message --message-file --show-template --update --changelog --log"
+    opts="--help -h --version -v --dry-run -n --uninstall --remove --repair --sync --force -f --quiet -q --no-color --no-unicode --plain --status --check --doctor --self-test --json --verbose -V --restore --diff --interactive -i --yes -y --skip-deps --completions --template --message --message-file --show-template --update --changelog --log"
 
     case "$prev" in
         --template)
@@ -1833,14 +1845,20 @@ _install_post_compact_reminder() {
         '-n[Preview changes without modifying]::'
         '--uninstall[Remove the hook]::'
         '--remove[Remove the hook]::'
+        '--repair[Repair installation and sync settings]::'
+        '--sync[Repair installation and sync settings]::'
         '--force[Reinstall even if already installed]::'
         '-f[Reinstall even if already installed]::'
         '--quiet[Suppress non-essential output]::'
         '-q[Suppress non-essential output]::'
         '--no-color[Disable colored output]::'
+        '--no-unicode[Use ASCII-only output]::'
+        '--plain[Use ASCII-only output]::'
         '--status[Show installation status]::'
         '--check[Show installation status]::'
-        '--json[Output status as JSON (use with --status)]::'
+        '--doctor[Run hook self-tests]::'
+        '--self-test[Run hook self-tests]::'
+        '--json[Output status as JSON (use with --status or --doctor)]::'
         '--verbose[Enable verbose output]::'
         '-V[Enable verbose output]::'
         '--restore[Restore settings.json from backup]::'
@@ -2226,6 +2244,10 @@ main() {
                 uninstall="true"
                 shift
                 ;;
+            --repair|--sync)
+                action="repair"
+                shift
+                ;;
             --force|-f)
                 force="true"
                 shift
@@ -2292,6 +2314,10 @@ main() {
                 action="status"
                 shift
                 ;;
+            --doctor|--self-test)
+                action="doctor"
+                shift
+                ;;
             --json)
                 STATUS_JSON="true"
                 shift
@@ -2325,8 +2351,11 @@ main() {
                 shift
                 ;;
             --no-color)
-                RED='' GREEN='' YELLOW='' BLUE='' CYAN='' MAGENTA='' WHITE='' BOLD='' DIM='' ITALIC='' UNDERLINE='' NC=''
-                BOX_TL='┌' BOX_TR='┐' BOX_BL='└' BOX_BR='┘' BOX_H='─' BOX_V='│'
+                apply_no_color
+                shift
+                ;;
+            --no-unicode|--plain)
+                apply_no_unicode
                 shift
                 ;;
             --log)
@@ -2352,8 +2381,8 @@ main() {
         esac
     done
 
-    if [[ "$STATUS_JSON" == "true" && "$action" != "status" ]]; then
-        log_error "--json is only valid with --status"
+    if [[ "$STATUS_JSON" == "true" && "$action" != "status" && "$action" != "doctor" ]]; then
+        log_error "--json is only valid with --status or --doctor"
         exit 1
     fi
 
@@ -2372,6 +2401,10 @@ main() {
     case "$action" in
         status)
             do_status "$hook_dir" "$settings_dir"
+            exit $?
+            ;;
+        doctor)
+            do_doctor "$hook_dir" "$settings_dir"
             exit $?
             ;;
         changelog)
@@ -2429,6 +2462,10 @@ main() {
             do_message "$action_arg" "$action_arg_type" "$hook_dir" "$settings_dir" "$dry_run"
             exit $?
             ;;
+        repair)
+            do_repair "$hook_dir" "$settings_dir" "$dry_run"
+            exit $?
+            ;;
         update)
             do_update "$dry_run"
             exit $?
@@ -2451,4 +2488,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
