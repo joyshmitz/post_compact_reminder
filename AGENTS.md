@@ -110,9 +110,7 @@ echo '{"session_id": "test-123", "source": "compact"}' | \
   ~/.local/bin/claude-post-compact-reminder
 
 # Expected output:
-# <post-compact-reminder>
 # Context was just compacted. Please reread AGENTS.md...
-# </post-compact-reminder>
 
 # Test hook with startup source (should output nothing)
 echo '{"session_id": "test-123", "source": "startup"}' | \
@@ -177,7 +175,7 @@ Context fills up → Compaction → SessionStart (source: "compact") → Hook fi
 1. Claude Code compacts context when it gets too long
 2. After compaction, `SessionStart` hook fires with `source: "compact"`
 3. The `matcher: "compact"` in settings.json triggers our hook
-4. Hook outputs XML-wrapped reminder message
+4. Hook outputs a reminder message
 5. Claude sees the reminder and re-reads AGENTS.md
 
 ### Installation Locations
@@ -191,11 +189,9 @@ Context fills up → Compaction → SessionStart (source: "compact") → Hook fi
 
 When triggered, the hook outputs:
 
-```xml
-<post-compact-reminder>
+```
 Context was just compacted. Please reread AGENTS.md to refresh your understanding
 of project conventions and agent coordination patterns.
-</post-compact-reminder>
 ```
 
 ### Settings.json Configuration

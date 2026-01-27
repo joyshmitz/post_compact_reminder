@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_helpers.sh"
 source "$SCRIPT_DIR/../install-post-compact-reminder.sh"
@@ -13,9 +14,7 @@ cat << 'EOF' > "$VALID_HOOK"
 #!/bin/bash
 # Simulate reading input to avoid broken pipe if test_hook writes to stdin
 cat > /dev/null
-echo "<post-compact-reminder>"
 echo "Reminder"
-echo "</post-compact-reminder>"
 EOF
 chmod +x "$VALID_HOOK"
 

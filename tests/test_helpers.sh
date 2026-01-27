@@ -5,7 +5,6 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Test Counters
@@ -117,7 +116,7 @@ print_test_summary() {
 assert_equals() {
     local expected="$1"
     local actual="$2"
-    local message="${3:-Expected '$expected', got '$actual'}"
+    local message="${3:-Expected \"${expected}\", got \"${actual}\"}"
     
     if [[ "$expected" == "$actual" ]]; then
         log_test PASS "$message"
@@ -133,7 +132,7 @@ assert_equals() {
 assert_contains() {
     local haystack="$1"
     local needle="$2"
-    local message="${3:-String should contain '$needle'}"
+    local message="${3:-String should contain \"${needle}\"}"
     
     if [[ "$haystack" == *"$needle"* ]]; then
         log_test PASS "$message"

@@ -11,15 +11,14 @@
 [![CI](https://github.com/Dicklesworthstone/post_compact_reminder/actions/workflows/ci.yml/badge.svg)](https://github.com/Dicklesworthstone/post_compact_reminder/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Bash 4.0+](https://img.shields.io/badge/bash-4.0%2B-blue?style=flat-square)](https://www.gnu.org/software/bash/)
-[![Hook: SessionStart](https://img.shields.io/badge/hook-SessionStart-green?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code/hooks)
 
 </div>
 
 <div align="center">
-<h3>Quick Install</h3>
+<h3>Quick Install (Recommended)</h3>
 
 ```bash
-curl -fsSL https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/heads/main/install-post-compact-reminder.sh | bash
+curl -fsSL https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/heads/main/install-post-compact-reminder-workaround.sh | bash
 ```
 
 </div>
@@ -30,16 +29,41 @@ curl -fsSL https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/h
 
 **The Problem:** During long coding sessions, Claude Code compacts the conversation to stay within context limits. After compaction, Claude loses all memory of your project's AGENTS.md, the file that defines your coding conventions, forbidden commands, architectural decisions, multi-agent coordination rules, and everything else that keeps Claude on the rails. The result: Claude starts freelancing, ignoring your rules, deleting files you told it never to delete, and generally going on a post-compaction rampage.
 
-**The Solution:** A `SessionStart` hook that detects compaction events and injects a short XML reminder telling Claude to re-read AGENTS.md before doing anything else. One install, zero maintenance, works globally across all your projects.
+**The Solution:** A hook system that detects compaction events and injects a short plain-text reminder telling Claude to re-read AGENTS.md before doing anything else. One install, zero maintenance, works globally across all your projects.
+
+---
+
+## Why "Workaround" Version?
+
+There are two versions of this tool:
+
+| Version | File | Mechanism | Status |
+|---------|------|-----------|--------|
+| **Workaround** (recommended) | `install-post-compact-reminder-workaround.sh` | PreCompact + UserPromptSubmit hooks with marker file | **Works reliably** |
+| Ideal | `install-post-compact-reminder.sh` | SessionStart hook with `compact` matcher | Waiting for bug fix |
+
+**The workaround version is the default because of a bug in Claude Code** ([#15174](https://github.com/anthropics/claude-code/issues/15174), [#13650](https://github.com/anthropics/claude-code/issues/13650)): The `SessionStart` hook with `matcher: "compact"` doesn't actually inject its stdout into Claude's context. The hook fires, but Claude never sees the reminder message.
+
+The workaround uses a different mechanism that reliably works:
+
+1. **PreCompact hook** writes a marker file when compaction is about to happen
+2. **UserPromptSubmit hook** checks for the marker on your next message
+3. If the marker exists, it injects the reminder and deletes the marker
+
+This ensures the reminder appears on your **first message after compaction**, which is when Claude needs it most.
+
+Once the bug is fixed, you can switch to the ideal SessionStart version, but for now, **use the workaround**.
+
+---
 
 ### Why Use Post-Compact Reminder?
 
 | Feature | What It Does |
 |---------|--------------|
-| **Automatic detection** | Fires only after compaction (`source: "compact"`), not on normal startups |
+| **Automatic detection** | Fires only after compaction, not on normal startups |
 | **Zero-config** | Installs globally in `~/.local/bin` and `~/.claude/settings.json`; works in every project |
 | **Customizable messages** | 4 built-in templates (minimal, detailed, checklist, default) + custom messages |
-| **Non-blocking** | SessionStart hooks don't block Claude's workflow; the reminder is injected instantly |
+| **Reliable injection** | Workaround mechanism ensures Claude actually sees the reminder |
 | **Idempotent installer** | Safe to run repeatedly; detects existing installs, handles upgrades, creates backups |
 | **Self-updating** | `--update` pulls the latest installer from GitHub |
 
@@ -48,66 +72,37 @@ curl -fsSL https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/h
 ## Quick Example
 
 ```bash
-# Install the hook (one command, globally)
-./install-post-compact-reminder.sh
-
-# Verify it's working
-echo '{"session_id": "test-123", "source": "compact"}' | \
-  ~/.local/bin/claude-post-compact-reminder
-
-# Output:
-# <post-compact-reminder>
-# Context was just compacted. Please reread AGENTS.md to refresh your understanding
-# of project conventions and agent coordination patterns.
-# </post-compact-reminder>
-
-# Verify normal startups produce no output (correct behavior)
-echo '{"session_id": "test-123", "source": "startup"}' | \
-  ~/.local/bin/claude-post-compact-reminder
-# (no output -- exactly right)
+# Install the workaround hook (one command, globally)
+./install-post-compact-reminder-workaround.sh
 
 # Check installation health anytime
-./install-post-compact-reminder.sh --status
+./install-post-compact-reminder-workaround.sh --status
+
+# Test the hook manually
+./install-post-compact-reminder-workaround.sh --doctor
 ```
+
+After installation, when compaction happens:
+1. The PreCompact hook writes a marker file
+2. On your next message, the UserPromptSubmit hook sees the marker
+3. Claude receives the reminder in its context
+4. The marker is deleted (one-shot, no repeats)
 
 ---
 
 ## Design Philosophy
 
-**1. Belt and suspenders.**
-The `matcher: "compact"` field in `settings.json` tells Claude Code to only invoke the hook after compaction events. The hook script *also* checks the `source` field in the JSON input. Redundant? Yes. Robust? Also yes.
+**1. Reliability over elegance.**
+The ideal SessionStart approach is cleaner, but it doesn't work due to a Claude Code bug. The workaround uses a two-hook + marker-file mechanism that's slightly more complex but actually delivers the reminder to Claude.
 
 **2. Atomic file operations.**
 Every modification to `settings.json` is written to a temp file first, then moved into place with `shutil.move()`. If the process crashes mid-write, your settings file stays intact. Backups are created automatically before every modification.
 
-**3. One file, one purpose.**
-The entire project is a single installer script (`install-post-compact-reminder.sh`) that generates a single hook script (`claude-post-compact-reminder`). No frameworks, no build steps, no node_modules.
+**3. One installer, complete functionality.**
+The entire project is a single installer script that generates the hook scripts and configures settings.json. No frameworks, no build steps, no node_modules.
 
 **4. Fail loudly, succeed quietly.**
 The installer validates dependencies, tests the hook after installation, and reports clear errors if anything goes wrong. When everything works, you get a concise summary and a reminder to restart Claude Code.
-
----
-
-## How It Compares
-
-| Capability | Post-Compact Reminder | Manual AGENTS.md re-read | Custom PreToolUse hook | No mitigation |
-|------------|----------------------|--------------------------|----------------------|---------------|
-| Fires automatically after compaction | Yes | No | No | No |
-| Requires user intervention each time | No | Yes (every compaction) | No | N/A |
-| Targets compaction specifically | Yes (matcher + source check) | N/A | Possible but complex | N/A |
-| Installs globally (all projects) | Yes | N/A | Possible | N/A |
-| Message customization | 4 templates + custom | N/A | Full control | N/A |
-| Setup effort | One command | Repeated manual effort | Write your own hook | None |
-| Non-blocking | Yes (SessionStart) | N/A | Depends (PreToolUse blocks) | N/A |
-
-**When to use Post-Compact Reminder:**
-- You have an AGENTS.md with conventions Claude should always follow
-- You run long coding sessions where compaction happens regularly
-- You use multi-agent workflows where consistency matters
-
-**When it might not be enough:**
-- If you need Claude to re-read files beyond AGENTS.md, customize the message template to include additional instructions
-- If you need to block Claude from acting before re-reading, you'd need a PreToolUse hook instead (this is a non-blocking SessionStart hook)
 
 ---
 
@@ -116,22 +111,22 @@ The installer validates dependencies, tests the hook after installation, and rep
 ### Quick Install (Recommended)
 
 ```bash
-curl -fsSL https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/heads/main/install-post-compact-reminder.sh | bash
+curl -fsSL https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/heads/main/install-post-compact-reminder-workaround.sh | bash
 ```
 
 ### Download and Run Locally
 
 ```bash
-curl -fsSL https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/heads/main/install-post-compact-reminder.sh \
-  -o install-post-compact-reminder.sh
-chmod +x install-post-compact-reminder.sh
-./install-post-compact-reminder.sh
+curl -fsSL https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/heads/main/install-post-compact-reminder-workaround.sh \
+  -o install-post-compact-reminder-workaround.sh
+chmod +x install-post-compact-reminder-workaround.sh
+./install-post-compact-reminder-workaround.sh
 ```
 
 ### Preview Before Installing
 
 ```bash
-./install-post-compact-reminder.sh --dry-run
+./install-post-compact-reminder-workaround.sh --dry-run
 ```
 
 ### Requirements
@@ -139,7 +134,7 @@ chmod +x install-post-compact-reminder.sh
 | Dependency | Purpose | Auto-installed? |
 |------------|---------|-----------------|
 | `bash` 4.0+ | Script interpreter | Included on all modern systems |
-| `jq` | Parse JSON input from Claude Code | Yes (apt, brew, dnf, yum, pacman) |
+| `jq` | JSON manipulation | Yes (apt, brew, dnf, yum, pacman) |
 | `python3` | Atomic JSON manipulation for `settings.json` | Yes (apt, brew, dnf, yum, pacman) |
 | `curl` | Self-update functionality (`--update`) | Usually pre-installed |
 
@@ -151,30 +146,28 @@ The installer detects your package manager and offers to auto-install missing de
 
 1. **Run the installer:**
    ```bash
-   ./install-post-compact-reminder.sh
+   ./install-post-compact-reminder-workaround.sh
    ```
 
 2. **Restart Claude Code** (required for hooks to load)
 
-3. **That's it.** Next time context compacts, Claude will automatically see:
-   ```xml
-   <post-compact-reminder>
-   Context was just compacted. Please reread AGENTS.md to refresh your understanding
+3. **That's it.** Next time context compacts and you send a message, Claude will automatically see:
+   ```
+   IMPORTANT: Context was just compacted. Please reread AGENTS.md to refresh your understanding
    of project conventions and agent coordination patterns.
-   </post-compact-reminder>
    ```
 
 4. **Optionally customize** the reminder message:
    ```bash
    # Interactive template picker
-   ./install-post-compact-reminder.sh --interactive
+   ./install-post-compact-reminder-workaround.sh --interactive
 
    # Or apply a preset directly
-   ./install-post-compact-reminder.sh --template detailed
+   ./install-post-compact-reminder-workaround.sh --template detailed
 
    # Or set a custom message non-interactively
-   ./install-post-compact-reminder.sh --message "Context compacted. Re-read AGENTS.md."
-   ./install-post-compact-reminder.sh --message-file ./my-reminder.txt
+   ./install-post-compact-reminder-workaround.sh --message "Context compacted. Re-read AGENTS.md."
+   ./install-post-compact-reminder-workaround.sh --message-file ./my-reminder.txt
    ```
 
 ---
@@ -184,58 +177,58 @@ The installer detects your package manager and offers to auto-install missing de
 ### Installation
 
 ```bash
-./install-post-compact-reminder.sh              # Install (idempotent)
-./install-post-compact-reminder.sh --force       # Reinstall even if up to date
-./install-post-compact-reminder.sh --dry-run     # Preview changes, modify nothing
-./install-post-compact-reminder.sh --yes         # Skip confirmation prompts
-./install-post-compact-reminder.sh --skip-deps   # Do not auto-install missing dependencies
-./install-post-compact-reminder.sh --uninstall   # Remove hook and settings entry
-./install-post-compact-reminder.sh --repair      # Repair installation and sync settings
+./install-post-compact-reminder-workaround.sh              # Install (idempotent)
+./install-post-compact-reminder-workaround.sh --force       # Reinstall even if up to date
+./install-post-compact-reminder-workaround.sh --dry-run     # Preview changes, modify nothing
+./install-post-compact-reminder-workaround.sh --yes         # Skip confirmation prompts
+./install-post-compact-reminder-workaround.sh --skip-deps   # Do not auto-install missing dependencies
+./install-post-compact-reminder-workaround.sh --uninstall   # Remove hooks and settings entries
+./install-post-compact-reminder-workaround.sh --repair      # Repair installation and sync settings
 ```
 
 ### Customization
 
 ```bash
-./install-post-compact-reminder.sh --interactive         # Interactive template picker
-./install-post-compact-reminder.sh --template minimal    # Apply preset: "Context compacted. Re-read AGENTS.md."
-./install-post-compact-reminder.sh --template detailed   # Apply preset: step-by-step instructions
-./install-post-compact-reminder.sh --template checklist  # Apply preset: markdown checklist
-./install-post-compact-reminder.sh --template default    # Apply preset: standard message
-./install-post-compact-reminder.sh --message "..."       # Custom message (single-line)
-./install-post-compact-reminder.sh --message-file ./msg.txt  # Custom message from file
-./install-post-compact-reminder.sh --update-reminder-message # Update message interactively (end with .done)
-./install-post-compact-reminder.sh --update-reminder-message "Context compacted. Re-read AGENTS.md."
-./install-post-compact-reminder.sh --update-reminder-message-file ./msg.txt
-./install-post-compact-reminder.sh --show-template       # Show currently installed message
+./install-post-compact-reminder-workaround.sh --interactive         # Interactive template picker
+./install-post-compact-reminder-workaround.sh --template minimal    # Apply preset: "Context compacted. Re-read AGENTS.md."
+./install-post-compact-reminder-workaround.sh --template detailed   # Apply preset: step-by-step instructions
+./install-post-compact-reminder-workaround.sh --template checklist  # Apply preset: markdown checklist
+./install-post-compact-reminder-workaround.sh --template default    # Apply preset: standard message
+./install-post-compact-reminder-workaround.sh --message "..."       # Custom message (single-line)
+./install-post-compact-reminder-workaround.sh --message-file ./msg.txt  # Custom message from file
+./install-post-compact-reminder-workaround.sh --update-reminder-message # Update message interactively
+./install-post-compact-reminder-workaround.sh --update-reminder-message "Context compacted. Re-read AGENTS.md."
+./install-post-compact-reminder-workaround.sh --update-reminder-message-file ./msg.txt
+./install-post-compact-reminder-workaround.sh --show-template       # Show currently installed message
 ```
 
 ### Diagnostics
 
 ```bash
-./install-post-compact-reminder.sh --status     # Full health check (script, settings, deps, hook test)
-./install-post-compact-reminder.sh --status --json  # JSON status output for automation
-./install-post-compact-reminder.sh --doctor     # Run hook self-tests
-./install-post-compact-reminder.sh --diff       # Compare installed vs. available version
-./install-post-compact-reminder.sh --verbose    # Enable debug output during any operation
-./install-post-compact-reminder.sh --log out.log  # Log all operations to file
+./install-post-compact-reminder-workaround.sh --status     # Full health check (scripts, settings, deps, hook test)
+./install-post-compact-reminder-workaround.sh --status --json  # JSON status output for automation
+./install-post-compact-reminder-workaround.sh --doctor     # Run hook self-tests
+./install-post-compact-reminder-workaround.sh --diff       # Compare installed vs. available version
+./install-post-compact-reminder-workaround.sh --verbose    # Enable debug output during any operation
+./install-post-compact-reminder-workaround.sh --log out.log  # Log all operations to file
 ```
 
 ### Maintenance
 
 ```bash
-./install-post-compact-reminder.sh --update     # Self-update installer from GitHub
-./install-post-compact-reminder.sh --restore    # Restore settings.json from automatic backup
-./install-post-compact-reminder.sh --changelog  # Show version history
-./install-post-compact-reminder.sh --completions bash >> ~/.bashrc   # Shell completions
-./install-post-compact-reminder.sh --completions zsh >> ~/.zshrc     # Zsh completions
+./install-post-compact-reminder-workaround.sh --update     # Self-update installer from GitHub
+./install-post-compact-reminder-workaround.sh --restore    # Restore settings.json from automatic backup
+./install-post-compact-reminder-workaround.sh --changelog  # Show version history
+./install-post-compact-reminder-workaround.sh --completions bash >> ~/.bashrc   # Shell completions
+./install-post-compact-reminder-workaround.sh --completions zsh >> ~/.zshrc     # Zsh completions
 ```
 
 ### Output Control
 
 ```bash
-./install-post-compact-reminder.sh --quiet      # Suppress non-essential output
-./install-post-compact-reminder.sh --no-color   # Disable ANSI color codes
-./install-post-compact-reminder.sh --no-unicode # ASCII-only output
+./install-post-compact-reminder-workaround.sh --quiet      # Suppress non-essential output
+./install-post-compact-reminder-workaround.sh --no-color   # Disable ANSI color codes
+./install-post-compact-reminder-workaround.sh --no-unicode # ASCII-only output
 ```
 
 Environment overrides:
@@ -258,68 +251,94 @@ Automatic output detection:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `HOOK_DIR` | Where to install the hook script | `~/.local/bin` |
+| `HOOK_DIR` | Where to install the hook scripts | `~/.local/bin` |
 | `SETTINGS_DIR` | Where to find/create `settings.json` | `~/.claude` |
 
 ```bash
 # Example: custom install locations
 HOOK_DIR=/opt/hooks SETTINGS_DIR=/etc/claude \
-  ./install-post-compact-reminder.sh
+  ./install-post-compact-reminder-workaround.sh
 ```
 
 ---
 
 ## Configuration
 
-The installer creates two files:
+The workaround installer creates three files:
 
-### Hook Script: `~/.local/bin/claude-post-compact-reminder`
+### PreCompact Hook: `~/.local/bin/claude-precompact-marker`
 
 ```bash
 #!/usr/bin/env bash
 # Version: 1.2.4
-# SessionStart hook: Remind Claude to reread AGENTS.md after compaction
+# PreCompact hook: Write marker file when compaction is about to happen
 
 set -e
 
-MESSAGE="Context was just compacted. Please reread AGENTS.md to refresh your understanding
-of project conventions and agent coordination patterns."
+MARKER_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-compact-reminder"
+MARKER_FILE="$MARKER_DIR/compact-pending"
 
-INPUT=$(cat)
-SOURCE=""
+# Ensure marker directory exists
+mkdir -p "$MARKER_DIR"
 
-if command -v jq &> /dev/null; then
-    SOURCE=$(echo "$INPUT" | jq -r '.source // empty' 2>/dev/null || true)
-else
-    REGEX='(^|[{,])[[:space:]]*"source"[[:space:]]*:[[:space:]]*"compact"'
-    if [[ "$INPUT" =~ $REGEX ]]; then
-        SOURCE="compact"
-    fi
-fi
+# Write timestamp to marker file
+date -Iseconds > "$MARKER_FILE"
 
-if [[ "$SOURCE" == "compact" ]]; then
-    printf '%s\n' "<post-compact-reminder>"
+exit 0
+```
+
+### UserPromptSubmit Hook: `~/.local/bin/claude-prompt-compact-check`
+
+```bash
+#!/usr/bin/env bash
+# Version: 1.2.4
+# UserPromptSubmit hook: Check for compact marker and inject reminder
+
+set -e
+
+MARKER_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-compact-reminder"
+MARKER_FILE="$MARKER_DIR/compact-pending"
+MESSAGE="IMPORTANT: Context was just compacted. Please reread AGENTS.md to refresh
+your understanding of project conventions and agent coordination patterns."
+
+# Check if marker file exists
+if [[ -f "$MARKER_FILE" ]]; then
+    # Remove the marker file FIRST to prevent duplicate reminders
+    rm -f "$MARKER_FILE"
+
+    # Output the reminder - this gets injected into Claude's context
+    echo ""
     printf '%s\n' "$MESSAGE"
-    printf '%s\n' "</post-compact-reminder>"
+    echo ""
 fi
 
 exit 0
 ```
 
-### Settings Entry: `~/.claude/settings.json`
+### Settings Entries: `~/.claude/settings.json`
 
-The installer adds (or merges) this into your existing settings:
+The installer adds (or merges) these into your existing settings:
 
 ```json
 {
   "hooks": {
-    "SessionStart": [
+    "PreCompact": [
       {
-        "matcher": "compact",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.local/bin/claude-post-compact-reminder"
+            "command": "$HOME/.local/bin/claude-precompact-marker"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.local/bin/claude-prompt-compact-check"
           }
         ]
       }
@@ -328,11 +347,9 @@ The installer adds (or merges) this into your existing settings:
 }
 ```
 
-The `matcher: "compact"` field tells Claude Code to only invoke this hook when the SessionStart event's input contains `"compact"`, which only happens after context compaction. Normal startups, resumes, and `/clear` commands are ignored.
-
 ---
 
-## Architecture
+## Architecture (Workaround Version)
 
 ```
 Long coding session...
@@ -345,21 +362,29 @@ Long coding session...
                    │
                    ▼
 ┌─────────────────────────────────────┐
-│  SessionStart event fires           │
-│  source: "compact"                  │
+│  PreCompact hook fires              │
+│  Writes marker file with timestamp  │
+│  ~/.local/state/claude-compact-     │
+│  reminder/compact-pending           │
 └──────────────────┬──────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────┐
-│  settings.json matcher: "compact"   │
-│  matches → invokes hook command     │
+│  Compaction completes               │
+│  Claude has fresh, empty context    │
 └──────────────────┬──────────────────┘
                    │
                    ▼
 ┌─────────────────────────────────────┐
-│  claude-post-compact-reminder       │
-│  reads JSON stdin, checks source,   │
-│  outputs XML reminder to stdout     │
+│  User sends next message            │
+│  UserPromptSubmit hook fires        │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────┐
+│  Hook checks for marker file        │
+│  Marker exists → inject reminder    │
+│  Delete marker (one-shot)           │
 └──────────────────┬──────────────────┘
                    │
                    ▼
@@ -369,23 +394,24 @@ Long coding session...
 └─────────────────────────────────────┘
 ```
 
-### How SessionStart Differs from Other Hooks
+### Why This Mechanism?
 
-| Hook | When It Fires | Can Block? | Use Case |
-|------|---------------|------------|----------|
-| **SessionStart** | Session begins (startup, resume, clear, compact) | No | Inject context, set environment |
-| **PreToolUse** | Before a tool executes | Yes | Block dangerous commands |
-| **PostToolUse** | After a tool completes | No | Auto-format, lint |
-| **UserPromptSubmit** | User sends a message | Yes | Add context to prompts |
+The ideal approach would use a `SessionStart` hook with `matcher: "compact"` to inject the reminder directly when the session restarts after compaction. However, due to Claude Code bugs [#15174](https://github.com/anthropics/claude-code/issues/15174) and [#13650](https://github.com/anthropics/claude-code/issues/13650), the SessionStart hook's stdout is not injected into context.
 
-The `source` field in SessionStart input tells you *why* the session started:
+The workaround uses two hooks that work reliably:
+- **PreCompact**: Fires before compaction, lets us leave a "breadcrumb"
+- **UserPromptSubmit**: Fires on every user message, lets us inject content into context
 
-| Source Value | Meaning |
-|--------------|---------|
-| `"startup"` | Fresh session |
-| `"resume"` | Resumed via `--resume`, `--continue`, or `/resume` |
-| `"clear"` | After `/clear` command |
-| `"compact"` | Restarted after context compaction |
+The marker file bridges the gap between these two events.
+
+### How Hooks Compare
+
+| Hook | When It Fires | Can Inject Context? | Use Case |
+|------|---------------|---------------------|----------|
+| **PreCompact** | Before compaction starts | No (too early) | Write marker file |
+| **SessionStart** | Session begins | No (bug) | Would be ideal, currently broken |
+| **UserPromptSubmit** | User sends a message | Yes (stdout injected) | Inject reminder |
+| **PreToolUse** | Before a tool executes | Yes (can block) | Block dangerous commands |
 
 ---
 
@@ -419,7 +445,7 @@ Context compacted. Before continuing:
 
 ### `default`
 ```
-Context was just compacted. Please reread AGENTS.md to refresh your understanding
+IMPORTANT: Context was just compacted. Please reread AGENTS.md to refresh your understanding
 of project conventions and agent coordination patterns.
 ```
 
@@ -428,16 +454,10 @@ of project conventions and agent coordination patterns.
 Use `--interactive` to enter any message you want, or edit the hook script directly:
 
 ```bash
-nano ~/.local/bin/claude-post-compact-reminder
+nano ~/.local/bin/claude-prompt-compact-check
 ```
 
-Modify the text between `<post-compact-reminder>` and `</post-compact-reminder>`, then test:
-
-```bash
-echo '{"source":"compact"}' | ~/.local/bin/claude-post-compact-reminder
-```
-
-Changes to the hook script take effect immediately. Only the initial installation requires restarting Claude Code.
+Modify the `MESSAGE=` text in the hook script. Changes take effect immediately (no restart needed).
 
 ---
 
@@ -447,33 +467,49 @@ Changes to the hook script take effect immediately. Only the initial installatio
 
 ```bash
 # Check installation health
-./install-post-compact-reminder.sh --status
+./install-post-compact-reminder-workaround.sh --status
 
-# Verify the hook script exists and is executable
-ls -la ~/.local/bin/claude-post-compact-reminder
+# Run the self-tests
+./install-post-compact-reminder-workaround.sh --doctor
 
-# Verify settings.json has the hook entry
-cat ~/.claude/settings.json | jq '.hooks.SessionStart'
+# Verify both hook scripts exist and are executable
+ls -la ~/.local/bin/claude-precompact-marker
+ls -la ~/.local/bin/claude-prompt-compact-check
+
+# Verify settings.json has both hook entries
+cat ~/.claude/settings.json | jq '.hooks.PreCompact, .hooks.UserPromptSubmit'
 ```
 
-If `--status` shows everything green but the hook still doesn't fire, restart Claude Code. Hooks are loaded at startup.
+If `--doctor` shows all tests passing but the hook still doesn't fire, restart Claude Code. Hooks are loaded at startup.
 
-### `jq: command not found`
+### Reminder appears on every message (not just after compaction)
 
-`jq` is strongly recommended for reliable JSON parsing. The hook falls back to a simple regex if `jq` is missing, but that fallback is less robust and may miss unusual JSON formatting.
+This would mean the marker file isn't being deleted. Check:
+
+```bash
+# Should NOT exist unless compaction just happened
+ls -la ~/.local/state/claude-compact-reminder/compact-pending
+
+# If it exists when it shouldn't, delete it
+rm ~/.local/state/claude-compact-reminder/compact-pending
+```
+
+### `jq` or `python3` not found
+
+The installer auto-detects your package manager and offers to install missing dependencies:
 
 ```bash
 # Ubuntu/Debian
-sudo apt install jq
+sudo apt install jq python3
 
 # macOS
-brew install jq
+brew install jq python
 
 # Fedora/RHEL
-sudo dnf install jq
+sudo dnf install jq python3
 
 # Arch
-sudo pacman -S jq
+sudo pacman -S jq python
 ```
 
 Or re-run the installer, which auto-installs missing dependencies.
@@ -484,48 +520,57 @@ The installer creates a `.bak` backup before every modification:
 
 ```bash
 # Restore from backup
-./install-post-compact-reminder.sh --restore
+./install-post-compact-reminder-workaround.sh --restore
 
 # Or manually
 cp ~/.claude/settings.json.bak ~/.claude/settings.json
 ```
 
-### Hook test produces no output
-
-```bash
-# This should produce output:
-echo '{"source": "compact"}' | ~/.local/bin/claude-post-compact-reminder
-
-# This should produce NO output (correct):
-echo '{"source": "startup"}' | ~/.local/bin/claude-post-compact-reminder
-```
-
-If the compact test produces no output, check that the script is executable and that JSON parsing works (installing `jq` improves reliability).
-
 ### Another instance is running
 
-The installer uses a PID lock file at `/tmp/.post-compact-reminder-install.lock` to prevent concurrent runs. If a previous run crashed:
+The installer uses a PID lock file to prevent concurrent runs. If a previous run crashed:
 
 ```bash
-rm /tmp/.post-compact-reminder-install.lock
+rm /tmp/.post-compact-reminder-workaround-*.lock
 ```
+
+---
+
+## The "Ideal" Version (Currently Broken)
+
+For reference, there's also `install-post-compact-reminder.sh` which uses the cleaner SessionStart approach:
+
+```bash
+# DON'T USE THIS YET - waiting for Claude Code bug fix
+./install-post-compact-reminder.sh
+```
+
+This version:
+- Uses a single `SessionStart` hook with `matcher: "compact"`
+- Parses JSON input to verify `source: "compact"`
+- Outputs the reminder directly
+
+It's the cleaner approach, but due to Claude Code bugs [#15174](https://github.com/anthropics/claude-code/issues/15174) and [#13650](https://github.com/anthropics/claude-code/issues/13650), the stdout from SessionStart hooks isn't injected into context. Once these bugs are fixed, this version will be the recommended approach.
 
 ---
 
 ## Limitations
 
-- **SessionStart hooks are non-blocking.** Claude sees the reminder in its context but isn't *forced* to act on it before proceeding. In practice, Claude reliably follows the instruction to re-read AGENTS.md, but there's no hard enforcement mechanism.
-- **Global only.** The hook installs to `~/.claude/settings.json`, which applies to all projects. There's no per-project override mechanism built in (though you could use `SETTINGS_DIR` to point at a project-local settings file).
-- **`jq` recommended, not required.** The hook uses `jq` when available; otherwise it falls back to a simple regex that detects `"source":"compact"`. The fallback is less robust, so keep `jq` installed for best reliability.
+- **Reminder appears on next message, not immediately.** The workaround can only inject the reminder when you send your next message after compaction. This is slightly delayed compared to the ideal SessionStart approach, but in practice you'll almost always send a message right after compaction anyway.
+- **Global only.** The hooks install to `~/.claude/settings.json`, which applies to all projects. There's no per-project override mechanism built in (though you could use `SETTINGS_DIR` to point at a project-local settings file).
 - **No Windows support.** This is a Bash script. It works on Linux, macOS, and WSL.
 
 ---
 
 ## FAQ
 
-### Why XML tags in the output?
+### Why is there a "workaround" version?
 
-The `<post-compact-reminder>` XML wrapper makes the reminder clearly identifiable in Claude's context. Claude Code's hook system injects the stdout of hook scripts into the conversation, and XML tags help Claude parse structured instructions from the noise.
+Claude Code has a bug where `SessionStart` hooks with `matcher: "compact"` don't inject their stdout into context. The workaround uses `PreCompact` + `UserPromptSubmit` hooks with a marker file to reliably deliver the reminder. Once the bug is fixed, the simpler SessionStart version will become the default.
+
+### Why plain-text output?
+
+Claude Code injects the hook's stdout directly into the conversation. A short plain-text reminder is enough for Claude to act on it and keeps the hook minimal and easy to customize.
 
 ### Does this work with Claude Code in VS Code / JetBrains?
 
@@ -542,18 +587,18 @@ Context compacted. Before continuing:
 3. Check .env.example for required environment variables
 ```
 
-### Does the hook fire on `/clear`?
+### Does the PreCompact hook block compaction?
 
-No. The `matcher: "compact"` ensures it only fires when `source` is `"compact"`. The `/clear` command sends `source: "clear"`, which doesn't match.
+No. The PreCompact hook runs before compaction but doesn't block it. It just writes a marker file so the UserPromptSubmit hook knows compaction happened.
 
 ### How do I update the hook when a new version comes out?
 
 ```bash
 # Update the installer itself
-./install-post-compact-reminder.sh --update
+./install-post-compact-reminder-workaround.sh --update
 
-# Then re-run to update the hook script
-./install-post-compact-reminder.sh --force
+# Then re-run to update the hook scripts
+./install-post-compact-reminder-workaround.sh --force
 ```
 
 ### Can I use this without an AGENTS.md?
@@ -564,12 +609,25 @@ Yes, but it's less useful. The default message tells Claude to re-read AGENTS.md
 
 Nothing bad. The installer is idempotent: it detects existing installations, compares versions, and skips if already up to date. Use `--force` to reinstall anyway.
 
+### Can I switch from workaround to ideal version later?
+
+Yes. First uninstall the workaround:
+```bash
+./install-post-compact-reminder-workaround.sh --uninstall
+```
+
+Then install the ideal version (once the bug is fixed):
+```bash
+./install-post-compact-reminder.sh
+```
+
 ---
 
 ## Related
 
 - [Claude Code Hooks Documentation](https://docs.anthropic.com/en/docs/claude-code/hooks): Official reference for all hook types
-- [DESTRUCTIVE_GIT_COMMAND_CLAUDE_HOOKS_SETUP.md](https://github.com/Dicklesworthstone/post_compact_reminder/blob/main/DESTRUCTIVE_GIT_COMMAND_CLAUDE_HOOKS_SETUP.md): Block dangerous `git` and `rm` commands with a PreToolUse hook
+- [GitHub Issue #15174](https://github.com/anthropics/claude-code/issues/15174): SessionStart compact matcher stdout not injected
+- [GitHub Issue #13650](https://github.com/anthropics/claude-code/issues/13650): Related SessionStart hook issue
 
 ---
 

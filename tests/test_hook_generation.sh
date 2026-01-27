@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_helpers.sh"
 source "$SCRIPT_DIR/../install-post-compact-reminder.sh"
@@ -37,11 +38,11 @@ assert_contains "$OUTPUT" "CustomTestTemplate" "generate_hook_script should use 
 # Restore
 TEMPLATE_DEFAULT="$OLD_TEMPLATE"
 
-# Test 4: Check for fallback logic structure
+# Test 4: Check for fallback logic structure and output
 assert_contains "$OUTPUT" "command -v jq" "Should contain jq check"
 assert_contains "$OUTPUT" "REGEX=" "Should contain regex fallback"
-assert_contains "$OUTPUT" "<post-compact-reminder>" "Should contain XML tag start"
-assert_contains "$OUTPUT" "</post-compact-reminder>" "Should contain XML tag end"
+assert_contains "$OUTPUT" "printf '%s" "Should use printf for message output"
+assert_contains "$OUTPUT" "\$MESSAGE" "Should reference MESSAGE variable"
 
 cleanup_test_env
 print_test_summary

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_helpers.sh"
 source "$SCRIPT_DIR/../install-post-compact-reminder.sh"
@@ -26,6 +27,7 @@ export PATH="$TEST_TEMP_DIR/bin:$ORIG_PATH" # Keep system path for basic tools l
 # We can define a function `command` inside this test script.
 # Sourced functions override builtins in bash.
 
+# shellcheck disable=SC2317
 function command() {
     if [[ "$1" == "-v" ]]; then
         if [[ "$2" == "jq" ]]; then
@@ -36,6 +38,12 @@ function command() {
              [[ -e "$TEST_TEMP_DIR/bin/apt-get" ]] && return 0 || return 1
         elif [[ "$2" == "brew" ]]; then
              [[ -e "$TEST_TEMP_DIR/bin/brew" ]] && return 0 || return 1
+        elif [[ "$2" == "dnf" ]]; then
+             [[ -e "$TEST_TEMP_DIR/bin/dnf" ]] && return 0 || return 1
+        elif [[ "$2" == "yum" ]]; then
+             [[ -e "$TEST_TEMP_DIR/bin/yum" ]] && return 0 || return 1
+        elif [[ "$2" == "pacman" ]]; then
+             [[ -e "$TEST_TEMP_DIR/bin/pacman" ]] && return 0 || return 1
         else
             # For other things, try the real command?
             # But 'command -v' is the check.

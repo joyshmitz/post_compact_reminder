@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091
 # Test runner for post-compact-reminder
 
 set -u

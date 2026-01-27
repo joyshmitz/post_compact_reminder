@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 #
-# install-post-compact-reminder.sh
-# Installs Claude Code hook to remind about AGENTS.md after context compaction
+# install-post-compact-reminder-workaround.sh
+# Workaround for Claude Code bug where SessionStart "compact" matcher
+# doesn't inject stdout into context (GitHub issues #15174, #13650)
+#
+# Mechanism:
+#   1. PreCompact hook writes a marker file with timestamp
+#   2. UserPromptSubmit hook checks for marker, injects reminder, deletes marker
+#
+# This ensures the reminder appears on the FIRST user message after compaction.
 #
 # Usage:
-#   ./install-post-compact-reminder.sh
+#   ./install-post-compact-reminder-workaround.sh
 #   curl -fsSL <url> | bash
 #
 # Options (see --help for full list):
 #   --help, -h        Show help
 #   --dry-run, -n     Preview changes without modifying anything
-#   --uninstall       Remove the hook
+#   --uninstall       Remove the hooks
 #   --force           Reinstall even if already installed
 #   --message         Use a custom reminder message
 #   --message-file    Use a custom reminder message from a file
@@ -25,20 +32,16 @@
 set -euo pipefail
 
 VERSION="1.2.4"
-SCRIPT_NAME="claude-post-compact-reminder"
-LOCK_FILE="${TMPDIR:-/tmp}/.post-compact-reminder-install-${USER:-$(id -u)}.lock"
-GITHUB_RAW_URL="https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/heads/main/install-post-compact-reminder.sh"
+PRECOMPACT_SCRIPT="claude-precompact-marker"
+PROMPT_SCRIPT="claude-prompt-compact-check"
+LOCK_FILE="${TMPDIR:-/tmp}/.post-compact-reminder-workaround-${USER:-$(id -u)}.lock"
+GITHUB_RAW_URL="https://github.com/Dicklesworthstone/post_compact_reminder/raw/refs/heads/main/install-post-compact-reminder-workaround.sh"
 GITHUB_RELEASES_URL="https://github.com/Dicklesworthstone/post_compact_reminder/releases"
 GITHUB_API_URL="https://api.github.com/repos/Dicklesworthstone/post_compact_reminder/releases/latest"
 
 # Changelog (newest first)
-CHANGELOG_1_2_4="UI alignment polish (auto-sized boxes), new --update-reminder-message CLI, and safer non-interactive behavior (TTY guard + auto no-color/no-unicode). Show-template now renders the actual installed message."
-CHANGELOG_1_2_3="Security hardening: Escaped special characters in generated hook script to prevent potential code injection from custom messages."
-CHANGELOG_1_2_2="Fixed lock file permission issues in multi-user environments. Improved regex precision for Bash-based JSON parsing fallback. Added cleanup for temporary files on failure."
-CHANGELOG_1_2_1="Added pure Bash fallback for JSON parsing in hook (removing runtime jq dependency). Added symlink resolution for settings.json to support dotfile managers."
-CHANGELOG_1_2_0="Added --message/--message-file, --status --json, and --skip-deps. Hardened settings.json edits and made the hook fail-open if jq is missing or JSON is invalid. Safer self-update path resolution. Templates now ensure settings are configured."
-CHANGELOG_1_1_0="Added --status, --verbose, --restore, --diff, --interactive, --yes, --completions, --template, --show-template, --update, --changelog, --log flags. Enhanced customization support."
-CHANGELOG_1_0_0="Initial release with basic install/uninstall, dry-run, force reinstall, quiet mode, and no-color support."
+CHANGELOG_1_2_4="Feature parity with main installer: full CLI, templates, interactive mode, self-update, completions, JSON status, doctor, diff, restore, and more."
+CHANGELOG_1_0_0="Initial workaround release for SessionStart compact matcher bug."
 
 # -----------------------------------------------------------------------------
 # Cleanup and error handling
@@ -231,12 +234,9 @@ repeat_char() {
 # Calculate display width (emojis are 2 columns, ASCII is 1)
 display_width() {
     local str="$1"
-    # Use wc -L for display width (works on GNU coreutils with UTF-8 locale)
-    # Fall back to character count if wc -L returns 0 or fails
     local width
     width=$(printf '%s' "$str" | LC_ALL=en_US.UTF-8 wc -L 2>/dev/null | tr -d ' ')
     if [[ -z "$width" ]] || (( width == 0 && ${#str} > 0 )); then
-        # Fallback: count characters plus extra for likely emojis (4-byte UTF-8)
         width=${#str}
     fi
     printf '%d' "$width"
@@ -351,9 +351,7 @@ TEMPLATE_CHECKLIST="Context compacted. Before continuing:
 - [ ] Run test suite
 - [ ] Check git status"
 
-TEMPLATE_DEFAULT="
-🚨 *IMPORTANT*: Context was just compacted. Please reread AGENTS.md to refresh your understanding of project conventions and agent coordination patterns.
-"
+TEMPLATE_DEFAULT="IMPORTANT: Context was just compacted. Please reread AGENTS.md to refresh your understanding of project conventions and agent coordination patterns."
 
 # -----------------------------------------------------------------------------
 # Banner
@@ -362,9 +360,10 @@ print_banner() {
     [[ "$QUIET" == "true" ]] && return
     local -a lines=(
         ""
-        "🧠  post-compact-reminder v${VERSION}"
+        "🧠  post-compact-reminder WORKAROUND v${VERSION}"
         ""
-        "\"We stop your bot from going on a post-compaction rampage.\""
+        "\"Works around bug #15174 where SessionStart 'compact'"
+        "  matcher doesn't inject stdout into context.\""
         ""
     )
     echo ""
@@ -378,17 +377,22 @@ print_banner() {
 show_help() {
     print_banner
     echo -e "${CYAN}${BOLD}${UNDERLINE}SYNOPSIS${NC}"
-    echo -e "  ${WHITE}install-post-compact-reminder.sh${NC} ${DIM}[OPTIONS]${NC}"
+    echo -e "  ${WHITE}install-post-compact-reminder-workaround.sh${NC} ${DIM}[OPTIONS]${NC}"
     echo ""
     echo -e "${CYAN}${BOLD}${UNDERLINE}DESCRIPTION${NC}"
-    echo -e "  Installs a ${GREEN}SessionStart${NC} hook that fires after context compaction"
-    echo -e "  and reminds Claude to re-read ${YELLOW}AGENTS.md${NC} for project conventions."
+    echo -e "  Workaround for Claude Code bug where ${GREEN}SessionStart${NC} hooks with"
+    echo -e "  ${YELLOW}compact${NC} matcher don't inject stdout into context."
+    echo ""
+    echo -e "  ${WHITE}Mechanism:${NC}"
+    echo -e "    1. ${GREEN}PreCompact${NC} hook writes a marker file when compaction happens"
+    echo -e "    2. ${GREEN}UserPromptSubmit${NC} hook checks for marker on each prompt"
+    echo -e "    3. If marker exists, injects reminder and deletes marker"
     echo ""
     echo -e "${CYAN}${BOLD}${UNDERLINE}INSTALLATION OPTIONS${NC}"
     echo -e "  ${GREEN}--help${NC}, ${GREEN}-h${NC}            Show this help message"
     echo -e "  ${GREEN}--version${NC}, ${GREEN}-v${NC}         Show version number"
     echo -e "  ${GREEN}--dry-run${NC}, ${GREEN}-n${NC}         Preview changes without modifying anything"
-    echo -e "  ${GREEN}--uninstall${NC}, ${GREEN}--remove${NC}  Remove the hook and settings entry"
+    echo -e "  ${GREEN}--uninstall${NC}, ${GREEN}--remove${NC}  Remove the hooks and settings entries"
     echo -e "  ${GREEN}--repair${NC}, ${GREEN}--sync${NC}       Repair installation and sync settings"
     echo -e "  ${GREEN}--force${NC}, ${GREEN}-f${NC}           Reinstall even if already at latest version"
     echo -e "  ${GREEN}--yes${NC}, ${GREEN}-y${NC}             Skip confirmation prompts"
@@ -426,30 +430,29 @@ show_help() {
     echo -e "  ${MAGENTA}HOOK_DIR${NC}              Override hook script location ${DIM}(default: ~/.local/bin)${NC}"
     echo -e "  ${MAGENTA}SETTINGS_DIR${NC}          Override settings location ${DIM}(default: ~/.claude)${NC}"
     echo ""
+    echo -e "${CYAN}${BOLD}${UNDERLINE}FILES CREATED${NC}"
+    echo -e "  ${WHITE}~/.local/bin/claude-precompact-marker${NC}     PreCompact hook script"
+    echo -e "  ${WHITE}~/.local/bin/claude-prompt-compact-check${NC}  UserPromptSubmit hook script"
+    echo -e "  ${WHITE}~/.local/state/claude-compact-reminder/${NC}   Marker file directory"
+    echo ""
     echo -e "${CYAN}${BOLD}${UNDERLINE}EXAMPLES${NC}"
     echo -e "  ${DIM}${ITALIC}# One-liner install${NC}"
     echo -e "  ${WHITE}curl -fsSL <url> | bash${NC}"
     echo ""
     echo -e "  ${DIM}${ITALIC}# Check installation status${NC}"
-    echo -e "  ${WHITE}./install-post-compact-reminder.sh --status${NC}"
+    echo -e "  ${WHITE}./install-post-compact-reminder-workaround.sh --status${NC}"
     echo ""
     echo -e "  ${DIM}${ITALIC}# Interactive setup with custom message${NC}"
-    echo -e "  ${WHITE}./install-post-compact-reminder.sh --interactive${NC}"
+    echo -e "  ${WHITE}./install-post-compact-reminder-workaround.sh --interactive${NC}"
     echo ""
     echo -e "  ${DIM}${ITALIC}# Apply minimal template${NC}"
-    echo -e "  ${WHITE}./install-post-compact-reminder.sh --template minimal${NC}"
-    echo ""
-    echo -e "  ${DIM}${ITALIC}# Custom message from a file${NC}"
-    echo -e "  ${WHITE}./install-post-compact-reminder.sh --message-file ./reminder.txt${NC}"
+    echo -e "  ${WHITE}./install-post-compact-reminder-workaround.sh --template minimal${NC}"
     echo ""
     echo -e "  ${DIM}${ITALIC}# Preview changes${NC}"
-    echo -e "  ${WHITE}./install-post-compact-reminder.sh --dry-run${NC}"
+    echo -e "  ${WHITE}./install-post-compact-reminder-workaround.sh --dry-run${NC}"
     echo ""
     echo -e "  ${DIM}${ITALIC}# Uninstall${NC}"
-    echo -e "  ${WHITE}./install-post-compact-reminder.sh --uninstall${NC}"
-    echo ""
-    echo -e "  ${DIM}${ITALIC}# Generate bash completions${NC}"
-    echo -e "  ${WHITE}./install-post-compact-reminder.sh --completions bash >> ~/.bashrc${NC}"
+    echo -e "  ${WHITE}./install-post-compact-reminder-workaround.sh --uninstall${NC}"
     echo ""
 }
 
@@ -613,9 +616,38 @@ get_installed_version() {
 }
 
 # -----------------------------------------------------------------------------
-# Hook script content
+# Marker file configuration
 # -----------------------------------------------------------------------------
-render_hook_script() {
+MARKER_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-compact-reminder"
+MARKER_FILE="$MARKER_DIR/compact-pending"
+
+# -----------------------------------------------------------------------------
+# Hook script generation
+# -----------------------------------------------------------------------------
+render_precompact_script() {
+    cat << 'SCRIPT_EOF'
+#!/usr/bin/env bash
+# Version: VERSION_PLACEHOLDER
+# PreCompact hook: Write marker file when compaction is about to happen
+# Part of post-compact-reminder-workaround
+
+set -e
+
+MARKER_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-compact-reminder"
+MARKER_FILE="$MARKER_DIR/compact-pending"
+
+# Ensure marker directory exists
+mkdir -p "$MARKER_DIR"
+
+# Write timestamp to marker file
+date -Iseconds > "$MARKER_FILE"
+
+# PreCompact hooks should exit 0 to allow compaction to proceed
+exit 0
+SCRIPT_EOF
+}
+
+render_prompt_script() {
     local message="$1"
     local note="${2:-}"
     local note_line=""
@@ -623,59 +655,52 @@ render_hook_script() {
     message_quoted=$(printf '%q' "$message")
 
     if [[ -n "$note" ]]; then
-        # Sanitize note (remove newlines)
         note="${note//[$'\n\r']}"
         note_line="# $note"
     fi
 
-    cat << HOOK_SCRIPT
+    cat << SCRIPT_EOF
 #!/usr/bin/env bash
 # Version: ${VERSION}
-# SessionStart hook: Remind Claude to reread AGENTS.md after compaction
-# Input: JSON with session_id, source on stdin
-#
-# This hook fires when source="compact" (configured via matcher in settings.json)
-# and outputs a reminder that Claude sees in its context.
+# UserPromptSubmit hook: Check for compact marker and inject reminder
+# Part of post-compact-reminder-workaround
 ${note_line}
 
 set -e
 
+MARKER_DIR="\${XDG_STATE_HOME:-\$HOME/.local/state}/claude-compact-reminder"
+MARKER_FILE="\$MARKER_DIR/compact-pending"
 MESSAGE=${message_quoted}
 
-# Read JSON input from Claude Code
-INPUT=\$(cat)
-SOURCE=""
+# Check if marker file exists
+if [[ -f "\$MARKER_FILE" ]]; then
+    # Remove the marker file FIRST to prevent duplicate reminders
+    rm -f "\$MARKER_FILE"
 
-# Parse source when jq is available; use bash regex fallback if missing
-if command -v jq &> /dev/null; then
-    SOURCE=\$(echo "\$INPUT" | jq -r '.source // empty' 2>/dev/null || true)
-else
-    # Fallback: regex matching for "source": "compact"
-    # Matches "source" key preceded by { or , (and whitespace) to avoid false positives
-    REGEX='(^|[{,])[[:space:]]*"source"[[:space:]]*:[[:space:]]*"compact"'
-    if [[ "\$INPUT" =~ \$REGEX ]]; then
-        SOURCE="compact"
-    fi
-fi
-
-# Double-check source (belt and suspenders with the matcher)
-if [[ "\$SOURCE" == "compact" ]]; then
+    # Output the reminder - this gets injected into Claude's context
+    # via UserPromptSubmit stdout
+    echo ""
     printf '%s\n' "\$MESSAGE"
+    echo ""
 fi
 
-# SessionStart hooks don't block, just exit 0
+# Always exit 0 to allow prompt to proceed
 exit 0
-HOOK_SCRIPT
+SCRIPT_EOF
 }
 
-generate_hook_script() {
-    render_hook_script "$TEMPLATE_DEFAULT"
+generate_precompact_script() {
+    render_precompact_script | sed "s/VERSION_PLACEHOLDER/${VERSION}/"
+}
+
+generate_prompt_script() {
+    render_prompt_script "$TEMPLATE_DEFAULT"
 }
 
 # -----------------------------------------------------------------------------
 # Settings management
 # -----------------------------------------------------------------------------
-check_settings_has_hook() {
+check_settings_has_hooks() {
     local settings_file="$1"
     if [[ ! -f "$settings_file" ]]; then
         return 1
@@ -693,7 +718,6 @@ settings_file = os.environ.get("SETTINGS_FILE", "")
 if not settings_file:
     sys.exit(1)
 
-# Resolve symlinks to ensure we check the real file
 if os.path.islink(settings_file):
     settings_file = os.path.realpath(settings_file)
 
@@ -701,24 +725,40 @@ try:
     with open(settings_file, "r") as f:
         settings = json.load(f)
 
-    hooks = settings.get("hooks", {}).get("SessionStart", [])
-    for hook_group in hooks:
+    hooks = settings.get("hooks", {})
+
+    # Check for PreCompact hook
+    has_precompact = False
+    for hook_group in hooks.get("PreCompact", []):
         for hook in hook_group.get("hooks", []):
-            if "post-compact-reminder" in hook.get("command", ""):
-                sys.exit(0)
+            if "claude-precompact-marker" in hook.get("command", ""):
+                has_precompact = True
+                break
+
+    # Check for UserPromptSubmit hook
+    has_prompt = False
+    for hook_group in hooks.get("UserPromptSubmit", []):
+        for hook in hook_group.get("hooks", []):
+            if "claude-prompt-compact-check" in hook.get("command", ""):
+                has_prompt = True
+                break
+
+    if has_precompact and has_prompt:
+        sys.exit(0)
     sys.exit(1)
 except Exception:
     sys.exit(1)
 PY
 }
 
-add_hook_to_settings() {
+add_hooks_to_settings() {
     local settings_file="$1"
-    local hook_path="$2"
-    local dry_run="$3"
+    local precompact_path="$2"
+    local prompt_path="$3"
+    local dry_run="$4"
 
     if [[ "$dry_run" == "true" ]]; then
-        log_step "[dry-run] Would add SessionStart hook to $settings_file"
+        log_step "[dry-run] Would add PreCompact and UserPromptSubmit hooks to $settings_file"
         return 0
     fi
 
@@ -727,7 +767,7 @@ add_hook_to_settings() {
         cp "$settings_file" "${settings_file}.bak" 2>/dev/null || true
     fi
 
-    SETTINGS_FILE="$settings_file" HOOK_PATH="$hook_path" python3 << 'MERGE_SCRIPT'
+    SETTINGS_FILE="$settings_file" PRECOMPACT_PATH="$precompact_path" PROMPT_PATH="$prompt_path" python3 << 'MERGE_SCRIPT'
 import json
 import os
 import sys
@@ -735,12 +775,13 @@ import tempfile
 import shutil
 
 settings_file = os.environ.get("SETTINGS_FILE", "")
-hook_path = os.environ.get("HOOK_PATH", "")
-if not settings_file or not hook_path:
-    print("error: missing settings file or hook path", file=sys.stderr)
+precompact_path = os.environ.get("PRECOMPACT_PATH", "")
+prompt_path = os.environ.get("PROMPT_PATH", "")
+
+if not settings_file or not precompact_path or not prompt_path:
+    print("error: missing settings file or hook paths", file=sys.stderr)
     sys.exit(1)
 
-# Resolve symlinks to ensure we edit the real file and preserve the link
 if os.path.islink(settings_file):
     settings_file = os.path.realpath(settings_file)
 
@@ -758,68 +799,69 @@ try:
     if 'hooks' not in settings:
         settings['hooks'] = {}
 
-    session_start = settings['hooks'].get('SessionStart', [])
-    new_session_start = []
-    found_existing = False
-    changed = False
-    hook_inserted = False
-    first_compact_idx = None
+    # Handle PreCompact hook
+    precompact_hooks = settings['hooks'].get('PreCompact', [])
+    found_precompact = False
+    new_precompact = []
 
-    for hook_group in session_start:
-        hooks = hook_group.get('hooks', [])
+    for hook_group in precompact_hooks:
         new_hooks = []
-        group_is_compact = hook_group.get('matcher') == 'compact'
-
-        for hook in hooks:
+        for hook in hook_group.get('hooks', []):
             cmd = hook.get('command', '')
-            if 'post-compact-reminder' in cmd:
-                found_existing = True
-                if group_is_compact and not hook_inserted:
-                    new_hook = dict(hook)
-                    if new_hook.get('command') != hook_path:
-                        new_hook['command'] = hook_path
-                        changed = True
-                    new_hooks.append(new_hook)
-                    hook_inserted = True
-                else:
-                    changed = True
-                    continue
+            if 'claude-precompact-marker' in cmd:
+                found_precompact = True
+                new_hook = dict(hook)
+                new_hook['command'] = precompact_path
+                new_hooks.append(new_hook)
             else:
                 new_hooks.append(hook)
-
         if new_hooks:
             new_group = dict(hook_group)
             new_group['hooks'] = new_hooks
-            new_session_start.append(new_group)
-            if group_is_compact and first_compact_idx is None:
-                first_compact_idx = len(new_session_start) - 1
+            new_precompact.append(new_group)
 
-    if not hook_inserted:
-        if first_compact_idx is not None:
-            new_session_start[first_compact_idx].setdefault('hooks', []).append({
-                "type": "command",
-                "command": hook_path
-            })
-        else:
-            new_session_start.append({
-                "matcher": "compact",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": hook_path
-                    }
-                ]
-            })
-        changed = True
+    if not found_precompact:
+        new_precompact.append({
+            "matcher": "*",
+            "hooks": [{"type": "command", "command": precompact_path}]
+        })
 
-    settings['hooks']['SessionStart'] = new_session_start
+    settings['hooks']['PreCompact'] = new_precompact
+
+    # Handle UserPromptSubmit hook
+    prompt_hooks = settings['hooks'].get('UserPromptSubmit', [])
+    found_prompt = False
+    new_prompt = []
+
+    for hook_group in prompt_hooks:
+        new_hooks = []
+        for hook in hook_group.get('hooks', []):
+            cmd = hook.get('command', '')
+            if 'claude-prompt-compact-check' in cmd:
+                found_prompt = True
+                new_hook = dict(hook)
+                new_hook['command'] = prompt_path
+                new_hooks.append(new_hook)
+            else:
+                new_hooks.append(hook)
+        if new_hooks:
+            new_group = dict(hook_group)
+            new_group['hooks'] = new_hooks
+            new_prompt.append(new_group)
+
+    if not found_prompt:
+        new_prompt.append({
+            "hooks": [{"type": "command", "command": prompt_path}]
+        })
+
+    settings['hooks']['UserPromptSubmit'] = new_prompt
 
     updated = json.dumps(settings, sort_keys=True)
-    if not changed or original == updated:
+    if original == updated:
         print('exists')
         sys.exit(0)
 
-    # Atomic write: write to temp file then rename
+    # Atomic write
     dir_name = os.path.dirname(settings_file) or '.'
     temp_path = None
     with tempfile.NamedTemporaryFile(mode='w', dir=dir_name, delete=False, suffix='.tmp') as tf:
@@ -828,7 +870,7 @@ try:
         temp_path = tf.name
 
     shutil.move(temp_path, settings_file)
-    print('updated' if found_existing else 'added')
+    print('updated' if (found_precompact or found_prompt) else 'added')
 
 except Exception as e:
     if 'temp_path' in locals() and temp_path and os.path.exists(temp_path):
@@ -838,7 +880,7 @@ except Exception as e:
 MERGE_SCRIPT
 }
 
-remove_hook_from_settings() {
+remove_hooks_from_settings() {
     local settings_file="$1"
     local dry_run="$2"
 
@@ -847,7 +889,7 @@ remove_hook_from_settings() {
     fi
 
     if [[ "$dry_run" == "true" ]]; then
-        log_step "[dry-run] Would remove SessionStart hook from $settings_file"
+        log_step "[dry-run] Would remove hooks from $settings_file"
         return 0
     fi
 
@@ -866,7 +908,6 @@ if not settings_file:
     print("error: missing settings file", file=sys.stderr)
     sys.exit(1)
 
-# Resolve symlinks to ensure we edit the real file and preserve the link
 if os.path.islink(settings_file):
     settings_file = os.path.realpath(settings_file)
 
@@ -877,30 +918,47 @@ try:
     with open(settings_file, 'r') as f:
         settings = json.load(f)
 
-    session_start = settings.get('hooks', {}).get('SessionStart', [])
-    new_session_start = []
-
-    for hook_group in session_start:
+    # Remove PreCompact hooks
+    precompact = settings.get('hooks', {}).get('PreCompact', [])
+    new_precompact = []
+    for hook_group in precompact:
         new_hooks = []
         for hook in hook_group.get('hooks', []):
-            if 'post-compact-reminder' not in hook.get('command', ''):
+            if 'claude-precompact-marker' not in hook.get('command', ''):
                 new_hooks.append(hook)
         if new_hooks:
-            # Create new dict to avoid mutating original
             new_group = dict(hook_group)
             new_group['hooks'] = new_hooks
-            new_session_start.append(new_group)
+            new_precompact.append(new_group)
 
-    if new_session_start:
-        settings['hooks']['SessionStart'] = new_session_start
+    if new_precompact:
+        settings['hooks']['PreCompact'] = new_precompact
     else:
-        settings.get('hooks', {}).pop('SessionStart', None)
+        settings.get('hooks', {}).pop('PreCompact', None)
+
+    # Remove UserPromptSubmit hooks
+    prompt = settings.get('hooks', {}).get('UserPromptSubmit', [])
+    new_prompt = []
+    for hook_group in prompt:
+        new_hooks = []
+        for hook in hook_group.get('hooks', []):
+            if 'claude-prompt-compact-check' not in hook.get('command', ''):
+                new_hooks.append(hook)
+        if new_hooks:
+            new_group = dict(hook_group)
+            new_group['hooks'] = new_hooks
+            new_prompt.append(new_group)
+
+    if new_prompt:
+        settings['hooks']['UserPromptSubmit'] = new_prompt
+    else:
+        settings.get('hooks', {}).pop('UserPromptSubmit', None)
 
     # Clean up empty hooks
     if not settings.get('hooks'):
         settings.pop('hooks', None)
 
-    # Atomic write: write to temp file then rename
+    # Atomic write
     dir_name = os.path.dirname(settings_file) or '.'
     temp_path = None
     with tempfile.NamedTemporaryFile(mode='w', dir=dir_name, delete=False, suffix='.tmp') as tf:
@@ -919,51 +977,50 @@ REMOVE_SCRIPT
 }
 
 # -----------------------------------------------------------------------------
-# Test hook
+# Test hooks
 # -----------------------------------------------------------------------------
-test_hook() {
+test_prompt_hook() {
     local script_path="$1"
+    local marker_dir="${XDG_STATE_HOME:-$HOME/.local/state}/claude-compact-reminder"
+    local marker_file="$marker_dir/compact-pending"
+
+    # Create marker file to simulate post-compaction state
+    mkdir -p "$marker_dir"
+    date -Iseconds > "$marker_file"
 
     local test_result
-    test_result=$(echo '{"session_id": "test", "source": "compact"}' | \
-        "$script_path" 2>/dev/null || true)
+    test_result=$("$script_path" 2>/dev/null || true)
 
-    # Any non-empty output on compact input is considered valid
-    if [[ -n "${test_result//[[:space:]]/}" ]]; then
+    # Check for key phrases
+    if echo "$test_result" | grep -qE "(AGENTS\.md|compacted|IMPORTANT)" 2>/dev/null; then
         return 0
-    fi
-    return 1
-}
-
-# -----------------------------------------------------------------------------
-# Extract rendered message from hook output
-# -----------------------------------------------------------------------------
-# Extract message lines from hook output
-# Handles both new format (plain text) and legacy format (with XML tags)
-extract_message_lines() {
-    local output="$1"
-    # Check if output has legacy XML tags
-    if [[ "$output" == *"<post-compact-reminder>"* ]]; then
-        local in_message="false"
-        local line
-        while IFS= read -r line; do
-            if [[ "$line" == "<post-compact-reminder>" ]]; then
-                in_message="true"
-                continue
-            fi
-            if [[ "$line" == "</post-compact-reminder>" ]]; then
-                break
-            fi
-            if [[ "$in_message" == "true" ]]; then
-                printf '%s\n' "$line"
-            fi
-        done <<< "$output"
     else
-        # New format: output is the message directly
-        printf '%s' "$output"
+        return 1
     fi
 }
 
+test_no_marker() {
+    local script_path="$1"
+    local marker_dir="${XDG_STATE_HOME:-$HOME/.local/state}/claude-compact-reminder"
+    local marker_file="$marker_dir/compact-pending"
+
+    # Ensure no marker exists
+    rm -f "$marker_file" 2>/dev/null || true
+
+    local test_result
+    test_result=$("$script_path" 2>/dev/null || true)
+
+    # Should produce no output when no marker
+    if [[ -z "$test_result" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Extract message from prompt script
+# -----------------------------------------------------------------------------
 get_rendered_message_lines() {
     local script_path="$1"
     if [[ ! -f "$script_path" ]]; then
@@ -971,22 +1028,37 @@ get_rendered_message_lines() {
         return 1
     fi
 
+    local marker_dir="${XDG_STATE_HOME:-$HOME/.local/state}/claude-compact-reminder"
+    local marker_file="$marker_dir/compact-pending"
+
+    # Create marker to trigger output
+    mkdir -p "$marker_dir"
+    date -Iseconds > "$marker_file"
+
     local -a cmd=("$script_path")
     if [[ ! -x "$script_path" ]]; then
         cmd=("bash" "$script_path")
     fi
 
     local output=""
-    output=$(echo '{"session_id": "render", "source": "compact"}' | \
-        "${cmd[@]}" 2>/dev/null || true)
+    output=$("${cmd[@]}" 2>/dev/null || true)
 
-    local -a lines=()
-    mapfile -t lines < <(extract_message_lines "$output")
-    if [[ ${#lines[@]} -eq 0 ]]; then
+    # Strip leading and trailing blank lines (they're for visual separation in
+    # Claude's context, not for the preview display)
+    # Remove leading blank lines
+    while [[ "$output" == $'\n'* ]]; do
+        output="${output#$'\n'}"
+    done
+    # Remove trailing blank lines
+    while [[ "$output" == *$'\n' ]]; do
+        output="${output%$'\n'}"
+    done
+
+    if [[ -z "$output" ]]; then
         printf '%s\n' "$TEMPLATE_DEFAULT"
         return 1
     fi
-    printf '%s\n' "${lines[@]}"
+    printf '%s\n' "$output"
     return 0
 }
 
@@ -1010,28 +1082,39 @@ do_status() {
     local hook_dir="$1"
     local settings_dir="$2"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
+    local precompact_path="${hook_dir}/${PRECOMPACT_SCRIPT}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
     local settings_file="${settings_dir}/settings.json"
 
-    # Quick dependency check (just set flags, don't install)
     detect_dependencies
 
     if [[ "$STATUS_JSON" == "true" ]]; then
-        local script_exists="false"
-        local script_executable="false"
+        local precompact_exists="false"
+        local precompact_executable="false"
+        local prompt_exists="false"
+        local prompt_executable="false"
         local installed_version=""
         local update_available="false"
         local settings_exists="false"
-        local hook_configured_json="null"
+        local hooks_configured_json="null"
         local backup_exists="false"
+        local marker_dir_exists="false"
+        local marker_pending="false"
         local hook_test_ran="false"
         local hook_test_passed_json="null"
 
-        if [[ -f "$script_path" ]]; then
-            script_exists="true"
-            installed_version=$(get_installed_version "$script_path")
-            if [[ -x "$script_path" ]]; then
-                script_executable="true"
+        if [[ -f "$precompact_path" ]]; then
+            precompact_exists="true"
+            if [[ -x "$precompact_path" ]]; then
+                precompact_executable="true"
+            fi
+        fi
+
+        if [[ -f "$prompt_path" ]]; then
+            prompt_exists="true"
+            installed_version=$(get_installed_version "$prompt_path")
+            if [[ -x "$prompt_path" ]]; then
+                prompt_executable="true"
             fi
         fi
 
@@ -1042,10 +1125,10 @@ do_status() {
         if [[ -f "$settings_file" ]]; then
             settings_exists="true"
             if [[ "$HAS_PYTHON" == "true" ]]; then
-                if check_settings_has_hook "$settings_file"; then
-                    hook_configured_json="true"
+                if check_settings_has_hooks "$settings_file"; then
+                    hooks_configured_json="true"
                 else
-                    hook_configured_json="false"
+                    hooks_configured_json="false"
                 fi
             fi
             if [[ -f "${settings_file}.bak" ]]; then
@@ -1053,9 +1136,16 @@ do_status() {
             fi
         fi
 
-        if [[ -x "$script_path" ]]; then
+        if [[ -d "$MARKER_DIR" ]]; then
+            marker_dir_exists="true"
+            if [[ -f "$MARKER_FILE" ]]; then
+                marker_pending="true"
+            fi
+        fi
+
+        if [[ -x "$prompt_path" ]]; then
             hook_test_ran="true"
-            if test_hook "$script_path"; then
+            if test_prompt_hook "$prompt_path"; then
                 hook_test_passed_json="true"
             else
                 hook_test_passed_json="false"
@@ -1064,12 +1154,17 @@ do_status() {
 
         printf '{\n'
         printf '  "version": "%s",\n' "$(json_escape "$VERSION")"
-        printf '  "paths": {"script": "%s", "settings": "%s"},\n' \
-            "$(json_escape "$script_path")" "$(json_escape "$settings_file")"
-        printf '  "hook_script": {"exists": %s, "executable": %s, "installed_version": "%s", "update_available": %s},\n' \
-            "$script_exists" "$script_executable" "$(json_escape "${installed_version:-}")" "$update_available"
-        printf '  "settings": {"exists": %s, "hook_configured": %s, "backup_exists": %s},\n' \
-            "$settings_exists" "$hook_configured_json" "$backup_exists"
+        printf '  "paths": {"precompact": "%s", "prompt": "%s", "settings": "%s", "marker_dir": "%s"},\n' \
+            "$(json_escape "$precompact_path")" "$(json_escape "$prompt_path")" \
+            "$(json_escape "$settings_file")" "$(json_escape "$MARKER_DIR")"
+        printf '  "precompact_script": {"exists": %s, "executable": %s},\n' \
+            "$precompact_exists" "$precompact_executable"
+        printf '  "prompt_script": {"exists": %s, "executable": %s, "installed_version": "%s", "update_available": %s},\n' \
+            "$prompt_exists" "$prompt_executable" "$(json_escape "${installed_version:-}")" "$update_available"
+        printf '  "settings": {"exists": %s, "hooks_configured": %s, "backup_exists": %s},\n' \
+            "$settings_exists" "$hooks_configured_json" "$backup_exists"
+        printf '  "marker": {"dir_exists": %s, "pending": %s},\n' \
+            "$marker_dir_exists" "$marker_pending"
         printf '  "dependencies": {"jq": %s, "python3": %s},\n' \
             "$HAS_JQ" "$HAS_PYTHON"
         printf '  "hook_test": {"ran": %s, "passed": %s}\n' \
@@ -1083,13 +1178,27 @@ do_status() {
     echo -e "  ${WHITE}${BOLD}${UNDERLINE}📊 Installation Status${NC}"
     echo ""
 
-    # Check script
-    echo -e "  ${CYAN}${BOLD}📜 Hook Script:${NC}"
-    if [[ -f "$script_path" ]]; then
+    # Check PreCompact script
+    echo -e "  ${CYAN}${BOLD}📜 PreCompact Hook Script:${NC}"
+    if [[ -f "$precompact_path" ]]; then
+        if [[ -x "$precompact_path" ]]; then
+            echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Installed at ${WHITE}$precompact_path${NC}"
+            echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Executable: yes"
+        else
+            echo -e "    ${YELLOW}${ICON_WARN}${NC} File exists but not executable"
+        fi
+    else
+        echo -e "    ${RED}${ICON_ERROR}${NC} Not installed at $precompact_path"
+    fi
+    echo ""
+
+    # Check UserPromptSubmit script
+    echo -e "  ${CYAN}${BOLD}📜 UserPromptSubmit Hook Script:${NC}"
+    if [[ -f "$prompt_path" ]]; then
         local installed_version
-        installed_version=$(get_installed_version "$script_path")
-        if [[ -x "$script_path" ]]; then
-            echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Installed at ${WHITE}$script_path${NC}"
+        installed_version=$(get_installed_version "$prompt_path")
+        if [[ -x "$prompt_path" ]]; then
+            echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Installed at ${WHITE}$prompt_path${NC}"
             echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Executable: yes"
             echo -e "    ${CYAN}${ICON_INFO}${NC} Version: ${WHITE}${installed_version:-unknown}${NC}"
             if [[ "$installed_version" != "$VERSION" && -n "$installed_version" ]]; then
@@ -1099,7 +1208,21 @@ do_status() {
             echo -e "    ${YELLOW}${ICON_WARN}${NC} File exists but not executable"
         fi
     else
-        echo -e "    ${RED}${ICON_ERROR}${NC} Not installed at $script_path"
+        echo -e "    ${RED}${ICON_ERROR}${NC} Not installed at $prompt_path"
+    fi
+    echo ""
+
+    # Check marker directory
+    echo -e "  ${CYAN}${BOLD}📁 Marker Directory:${NC}"
+    if [[ -d "$MARKER_DIR" ]]; then
+        echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Exists at ${WHITE}$MARKER_DIR${NC}"
+        if [[ -f "$MARKER_FILE" ]]; then
+            local ts
+            ts=$(cat "$MARKER_FILE" 2>/dev/null || echo "unknown")
+            echo -e "    ${CYAN}${ICON_INFO}${NC} Pending marker exists (compaction at: $ts)"
+        fi
+    else
+        echo -e "    ${YELLOW}${ICON_WARN}${NC} Not created yet (will be created on first compaction)"
     fi
     echo ""
 
@@ -1108,10 +1231,10 @@ do_status() {
     if [[ -f "$settings_file" ]]; then
         echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Settings file exists at ${WHITE}$settings_file${NC}"
         if [[ "$HAS_PYTHON" == "true" ]]; then
-            if check_settings_has_hook "$settings_file"; then
-                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Hook configured in settings.json"
+            if check_settings_has_hooks "$settings_file"; then
+                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Hooks configured in settings.json"
             else
-                echo -e "    ${RED}${ICON_ERROR}${NC} Hook NOT configured in settings.json"
+                echo -e "    ${RED}${ICON_ERROR}${NC} Hooks NOT configured in settings.json"
             fi
         else
             echo -e "    ${YELLOW}${ICON_WARN}${NC} Cannot verify hook config (python3 not available)"
@@ -1139,10 +1262,10 @@ do_status() {
     echo ""
 
     # Test hook if installed
-    if [[ -x "$script_path" ]]; then
+    if [[ -x "$prompt_path" ]]; then
         echo -e "  ${CYAN}${BOLD}🧪 Hook Test:${NC}"
-        if test_hook "$script_path"; then
-            echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Hook responds correctly to compact events"
+        if test_prompt_hook "$prompt_path"; then
+            echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Hook responds correctly with marker present"
         else
             echo -e "    ${RED}${ICON_ERROR}${NC} Hook test failed"
         fi
@@ -1157,69 +1280,79 @@ do_doctor() {
     local hook_dir="$1"
     local settings_dir="$2"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
+    local precompact_path="${hook_dir}/${PRECOMPACT_SCRIPT}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
     local settings_file="${settings_dir}/settings.json"
 
     detect_dependencies
 
-    local script_exists="false"
-    local script_executable="false"
+    local precompact_exists="false"
+    local precompact_executable="false"
+    local prompt_exists="false"
+    local prompt_executable="false"
     local settings_exists="false"
-    local hook_configured_json="null"
-    local compact_test_ran="false"
-    local compact_test_passed_json="null"
-    local startup_test_ran="false"
-    local startup_test_passed_json="null"
+    local hooks_configured_json="null"
+    local marker_test_ran="false"
+    local marker_test_passed_json="null"
+    local no_marker_test_ran="false"
+    local no_marker_test_passed_json="null"
 
-    if [[ -f "$script_path" ]]; then
-        script_exists="true"
-        if [[ -x "$script_path" ]]; then
-            script_executable="true"
+    if [[ -f "$precompact_path" ]]; then
+        precompact_exists="true"
+        if [[ -x "$precompact_path" ]]; then
+            precompact_executable="true"
+        fi
+    fi
+
+    if [[ -f "$prompt_path" ]]; then
+        prompt_exists="true"
+        if [[ -x "$prompt_path" ]]; then
+            prompt_executable="true"
         fi
     fi
 
     if [[ -f "$settings_file" ]]; then
         settings_exists="true"
         if [[ "$HAS_PYTHON" == "true" ]]; then
-            if check_settings_has_hook "$settings_file"; then
-                hook_configured_json="true"
+            if check_settings_has_hooks "$settings_file"; then
+                hooks_configured_json="true"
             else
-                hook_configured_json="false"
+                hooks_configured_json="false"
             fi
         fi
     fi
 
-    if [[ -x "$script_path" ]]; then
-        compact_test_ran="true"
-        if test_hook "$script_path"; then
-            compact_test_passed_json="true"
+    if [[ -x "$prompt_path" ]]; then
+        marker_test_ran="true"
+        if test_prompt_hook "$prompt_path"; then
+            marker_test_passed_json="true"
         else
-            compact_test_passed_json="false"
+            marker_test_passed_json="false"
         fi
 
-        startup_test_ran="true"
-        local startup_output
-        startup_output=$(echo '{"session_id": "doctor", "source": "startup"}' | \
-            "$script_path" 2>/dev/null || true)
-        if [[ -z "$startup_output" ]]; then
-            startup_test_passed_json="true"
+        no_marker_test_ran="true"
+        if test_no_marker "$prompt_path"; then
+            no_marker_test_passed_json="true"
         else
-            startup_test_passed_json="false"
+            no_marker_test_passed_json="false"
         fi
     fi
 
     if [[ "$STATUS_JSON" == "true" ]]; then
         printf '{\n'
-        printf '  "paths": {"script": "%s", "settings": "%s"},\n' \
-            "$(json_escape "$script_path")" "$(json_escape "$settings_file")"
-        printf '  "hook_script": {"exists": %s, "executable": %s},\n' \
-            "$script_exists" "$script_executable"
-        printf '  "settings": {"exists": %s, "hook_configured": %s},\n' \
-            "$settings_exists" "$hook_configured_json"
+        printf '  "paths": {"precompact": "%s", "prompt": "%s", "settings": "%s"},\n' \
+            "$(json_escape "$precompact_path")" "$(json_escape "$prompt_path")" \
+            "$(json_escape "$settings_file")"
+        printf '  "precompact_script": {"exists": %s, "executable": %s},\n' \
+            "$precompact_exists" "$precompact_executable"
+        printf '  "prompt_script": {"exists": %s, "executable": %s},\n' \
+            "$prompt_exists" "$prompt_executable"
+        printf '  "settings": {"exists": %s, "hooks_configured": %s},\n' \
+            "$settings_exists" "$hooks_configured_json"
         printf '  "dependencies": {"jq": %s, "python3": %s},\n' \
             "$HAS_JQ" "$HAS_PYTHON"
-        printf '  "tests": {"compact": {"ran": %s, "passed": %s}, "startup": {"ran": %s, "passed": %s}}\n' \
-            "$compact_test_ran" "$compact_test_passed_json" "$startup_test_ran" "$startup_test_passed_json"
+        printf '  "tests": {"with_marker": {"ran": %s, "passed": %s}, "without_marker": {"ran": %s, "passed": %s}}\n' \
+            "$marker_test_ran" "$marker_test_passed_json" "$no_marker_test_ran" "$no_marker_test_passed_json"
         printf '}\n'
     else
         print_banner
@@ -1227,26 +1360,38 @@ do_doctor() {
         echo -e "${WHITE}${BOLD}${UNDERLINE}Doctor Results${NC}"
         echo ""
 
-        echo -e "  ${CYAN}${BOLD}📜 Hook Script:${NC}"
-        if [[ "$script_exists" == "true" ]]; then
-            if [[ "$script_executable" == "true" ]]; then
-                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Installed and executable: ${WHITE}$script_path${NC}"
+        echo -e "  ${CYAN}${BOLD}📜 PreCompact Script:${NC}"
+        if [[ "$precompact_exists" == "true" ]]; then
+            if [[ "$precompact_executable" == "true" ]]; then
+                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Installed and executable"
             else
-                echo -e "    ${YELLOW}${ICON_WARN}${NC} Installed but not executable: ${WHITE}$script_path${NC}"
+                echo -e "    ${YELLOW}${ICON_WARN}${NC} Installed but not executable"
             fi
         else
-            echo -e "    ${RED}${ICON_ERROR}${NC} Missing: ${WHITE}$script_path${NC}"
+            echo -e "    ${RED}${ICON_ERROR}${NC} Missing"
+        fi
+        echo ""
+
+        echo -e "  ${CYAN}${BOLD}📜 UserPromptSubmit Script:${NC}"
+        if [[ "$prompt_exists" == "true" ]]; then
+            if [[ "$prompt_executable" == "true" ]]; then
+                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Installed and executable"
+            else
+                echo -e "    ${YELLOW}${ICON_WARN}${NC} Installed but not executable"
+            fi
+        else
+            echo -e "    ${RED}${ICON_ERROR}${NC} Missing"
         fi
         echo ""
 
         echo -e "  ${CYAN}${BOLD}Settings:${NC}"
         if [[ "$settings_exists" == "true" ]]; then
-            echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Settings file exists: ${WHITE}$settings_file${NC}"
+            echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Settings file exists"
             if [[ "$HAS_PYTHON" == "true" ]]; then
-                if [[ "$hook_configured_json" == "true" ]]; then
-                    echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Hook configured in settings.json"
+                if [[ "$hooks_configured_json" == "true" ]]; then
+                    echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Hooks configured in settings.json"
                 else
-                    echo -e "    ${RED}${ICON_ERROR}${NC} Hook NOT configured in settings.json"
+                    echo -e "    ${RED}${ICON_ERROR}${NC} Hooks NOT configured in settings.json"
                 fi
             else
                 echo -e "    ${YELLOW}${ICON_WARN}${NC} Cannot verify hook config (python3 not available)"
@@ -1257,39 +1402,42 @@ do_doctor() {
         echo ""
 
         echo -e "  ${CYAN}${BOLD}Tests:${NC}"
-        if [[ "$compact_test_ran" == "true" ]]; then
-            if [[ "$compact_test_passed_json" == "true" ]]; then
-                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Compact event triggers reminder"
+        if [[ "$marker_test_ran" == "true" ]]; then
+            if [[ "$marker_test_passed_json" == "true" ]]; then
+                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} With marker: triggers reminder"
             else
-                echo -e "    ${RED}${ICON_ERROR}${NC} Compact event test failed"
+                echo -e "    ${RED}${ICON_ERROR}${NC} With marker: test failed"
             fi
         else
-            echo -e "    ${YELLOW}${ICON_WARN}${NC} Compact event test skipped (hook not executable)"
+            echo -e "    ${YELLOW}${ICON_WARN}${NC} With marker: test skipped (hook not executable)"
         fi
 
-        if [[ "$startup_test_ran" == "true" ]]; then
-            if [[ "$startup_test_passed_json" == "true" ]]; then
-                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Startup event produces no output"
+        if [[ "$no_marker_test_ran" == "true" ]]; then
+            if [[ "$no_marker_test_passed_json" == "true" ]]; then
+                echo -e "    ${GREEN}${ICON_SUCCESS}${NC} Without marker: no output (correct)"
             else
-                echo -e "    ${RED}${ICON_ERROR}${NC} Startup event produced unexpected output"
+                echo -e "    ${RED}${ICON_ERROR}${NC} Without marker: produced unexpected output"
             fi
         else
-            echo -e "    ${YELLOW}${ICON_WARN}${NC} Startup event test skipped (hook not executable)"
+            echo -e "    ${YELLOW}${ICON_WARN}${NC} Without marker: test skipped (hook not executable)"
         fi
         echo ""
     fi
 
     local ok="true"
-    if [[ "$script_exists" != "true" || "$script_executable" != "true" ]]; then
+    if [[ "$precompact_exists" != "true" || "$precompact_executable" != "true" ]]; then
+        ok="false"
+    fi
+    if [[ "$prompt_exists" != "true" || "$prompt_executable" != "true" ]]; then
         ok="false"
     fi
     if [[ "$settings_exists" != "true" ]]; then
         ok="false"
     fi
-    if [[ "$hook_configured_json" == "false" ]]; then
+    if [[ "$hooks_configured_json" == "false" ]]; then
         ok="false"
     fi
-    if [[ "$compact_test_passed_json" == "false" || "$startup_test_passed_json" == "false" ]]; then
+    if [[ "$marker_test_passed_json" == "false" || "$no_marker_test_passed_json" == "false" ]]; then
         ok="false"
     fi
 
@@ -1309,8 +1457,6 @@ do_restore() {
     local settings_file="${settings_dir}/settings.json"
     local backup_file="${settings_file}.bak"
 
-    # Note: banner already printed by main()
-
     if [[ ! -f "$backup_file" ]]; then
         log_error "No backup file found at $backup_file"
         echo ""
@@ -1320,7 +1466,6 @@ do_restore() {
 
     log_info "Found backup: $backup_file"
 
-    # Show what's different
     if command -v diff &> /dev/null && [[ -f "$settings_file" ]]; then
         echo ""
         echo -e "${WHITE}${BOLD}Changes to restore:${NC}"
@@ -1334,7 +1479,6 @@ do_restore() {
         return 0
     fi
 
-    # Confirm unless --yes
     if [[ "$YES_FLAG" != "true" ]]; then
         require_tty "Use --yes to skip confirmation." || return 1
         echo -e "${YELLOW}Restore settings.json from backup?${NC} [y/N] "
@@ -1357,18 +1501,18 @@ do_restore() {
 do_diff() {
     local hook_dir="$1"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
 
     print_banner
 
-    if [[ ! -f "$script_path" ]]; then
-        log_error "Hook not installed at $script_path"
+    if [[ ! -f "$prompt_path" ]]; then
+        log_error "Hook not installed at $prompt_path"
         echo -e "  ${DIM}Run without --diff to install first.${NC}"
         return 1
     fi
 
     local installed_version
-    installed_version=$(get_installed_version "$script_path")
+    installed_version=$(get_installed_version "$prompt_path")
 
     echo -e "${WHITE}${BOLD}${UNDERLINE}Version Comparison${NC}"
     echo ""
@@ -1381,16 +1525,15 @@ do_diff() {
         return 0
     fi
 
-    echo -e "${WHITE}${BOLD}Hook script diff:${NC}"
+    echo -e "${WHITE}${BOLD}UserPromptSubmit script diff:${NC}"
     echo ""
 
-    # Generate new script to temp file for comparison
     local temp_new
     temp_new=$(mktemp)
-    generate_hook_script > "$temp_new"
+    generate_prompt_script > "$temp_new"
 
     if command -v diff &> /dev/null; then
-        diff --color=auto -u "$script_path" "$temp_new" || true
+        diff --color=auto -u "$prompt_path" "$temp_new" || true
     else
         echo -e "${DIM}(diff not available - showing new version)${NC}"
         cat "$temp_new"
@@ -1408,15 +1551,11 @@ do_interactive() {
     local settings_dir="$2"
     local dry_run="$3"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
-
-    # Note: banner already printed by main()
     require_tty "Use --template, --message, or --message-file for non-interactive usage." || return 1
 
     echo -e "${WHITE}${BOLD}${UNDERLINE}Interactive Setup${NC}"
     echo ""
 
-    # Step 1: Choose template
     echo -e "${CYAN}${BOLD}Step 1:${NC} Choose a message template"
     echo ""
     echo -e "  ${GREEN}1)${NC} ${WHITE}minimal${NC}   - Short one-liner"
@@ -1452,7 +1591,7 @@ do_interactive() {
                 [[ -z "$line" ]] && break
                 chosen_message+="$line"$'\n'
             done
-            chosen_message="${chosen_message%$'\n'}"  # Remove trailing newline
+            chosen_message="${chosen_message%$'\n'}"
             ;;
         *)
             log_warn "Invalid choice, using default"
@@ -1479,51 +1618,50 @@ do_interactive() {
         return 1
     fi
 
-    # Dry run check
     if [[ "$dry_run" == "true" ]]; then
         echo ""
-        log_step "[dry-run] Would create $script_path with custom message"
+        log_step "[dry-run] Would create hook scripts with custom message"
         log_step "[dry-run] Would update settings.json"
         echo ""
         log_info "[dry-run] No changes made"
         return 0
     fi
 
-    # Generate custom hook script
     echo ""
     log_step "Creating directories..."
     mkdir -p "$hook_dir"
     mkdir -p "$settings_dir"
+    mkdir -p "$MARKER_DIR"
 
-    log_step "Creating hook script with custom message..."
+    local precompact_path="${hook_dir}/${PRECOMPACT_SCRIPT}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
 
-    render_hook_script "$chosen_message" "Generated by interactive setup" > "$script_path"
+    log_step "Creating PreCompact hook script..."
+    generate_precompact_script > "$precompact_path"
+    chmod +x "$precompact_path"
+    log_success "Created $precompact_path"
 
-    chmod +x "$script_path"
-    log_success "Created $script_path"
+    log_step "Creating UserPromptSubmit hook script with custom message..."
+    render_prompt_script "$chosen_message" "Generated by interactive setup" > "$prompt_path"
+    chmod +x "$prompt_path"
+    log_success "Created $prompt_path"
 
-    # Update settings
-    if [[ "$HAS_PYTHON" != "true" ]]; then
-        log_error "python3 not found; cannot update settings.json"
-        return 1
-    fi
     log_step "Updating settings.json..."
     local settings_file="${settings_dir}/settings.json"
-    local hook_path_for_settings
     local default_hook_dir="$HOME/.local/bin"
+    local precompact_for_settings prompt_for_settings
     if [[ "$hook_dir" == "$default_hook_dir" ]]; then
-        # Use $HOME for portability when using default location
-        hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
+        precompact_for_settings="\$HOME/.local/bin/${PRECOMPACT_SCRIPT}"
+        prompt_for_settings="\$HOME/.local/bin/${PROMPT_SCRIPT}"
     else
-        # Use absolute path for custom HOOK_DIR
-        hook_path_for_settings="$script_path"
+        precompact_for_settings="$precompact_path"
+        prompt_for_settings="$prompt_path"
     fi
-    add_hook_to_settings "$settings_file" "$hook_path_for_settings" "false" > /dev/null
+    add_hooks_to_settings "$settings_file" "$precompact_for_settings" "$prompt_for_settings" "false" > /dev/null
     log_success "Settings updated"
 
-    # Test
     log_step "Testing hook..."
-    if test_hook "$script_path"; then
+    if test_prompt_hook "$prompt_path"; then
         log_success "Hook test passed"
     else
         log_warn "Hook test inconclusive"
@@ -1532,7 +1670,7 @@ do_interactive() {
     echo ""
     log_success "Interactive setup complete!"
     echo ""
-    echo -e "${YELLOW}${ICON_ZAP} Restart Claude Code for the hook to take effect.${NC}"
+    echo -e "${YELLOW}${ICON_ZAP} Restart Claude Code for the hooks to take effect.${NC}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1541,10 +1679,10 @@ do_interactive() {
 do_show_template() {
     local hook_dir="$1"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
 
-    if [[ ! -f "$script_path" ]]; then
-        log_error "Hook not installed at $script_path"
+    if [[ ! -f "$prompt_path" ]]; then
+        log_error "Hook not installed at $prompt_path"
         return 1
     fi
 
@@ -1554,11 +1692,11 @@ do_show_template() {
     echo ""
 
     local -a message_lines
-    mapfile -t message_lines < <(get_rendered_message_lines "$script_path")
+    mapfile -t message_lines < <(get_rendered_message_lines "$prompt_path")
     print_box "box" "  " "${MAGENTA}" "" 57 "${message_lines[@]}"
 
     echo ""
-    echo -e "${DIM}File: $script_path${NC}"
+    echo -e "${DIM}File: $prompt_path${NC}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1569,10 +1707,6 @@ do_template() {
     local hook_dir="$2"
     local settings_dir="$3"
     local dry_run="$4"
-
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
-
-    # Note: banner already printed by main()
 
     local chosen_message=""
     case "$template_name" in
@@ -1596,7 +1730,7 @@ do_template() {
     fi
 
     if [[ "$dry_run" == "true" ]]; then
-        log_step "[dry-run] Would create $script_path with '$template_name' template"
+        log_step "[dry-run] Would create hook scripts with '$template_name' template"
         echo ""
         echo -e "${WHITE}${BOLD}Preview:${NC}"
         echo ""
@@ -1607,30 +1741,35 @@ do_template() {
     fi
 
     mkdir -p "$hook_dir"
+    mkdir -p "$settings_dir"
+    mkdir -p "$MARKER_DIR"
 
-    render_hook_script "$chosen_message" "Template: ${template_name}" > "$script_path"
+    local precompact_path="${hook_dir}/${PRECOMPACT_SCRIPT}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
 
-    chmod +x "$script_path"
-    log_success "Applied '$template_name' template to $script_path"
+    generate_precompact_script > "$precompact_path"
+    chmod +x "$precompact_path"
 
-    # Test
-    if test_hook "$script_path"; then
+    render_prompt_script "$chosen_message" "Template: ${template_name}" > "$prompt_path"
+    chmod +x "$prompt_path"
+    log_success "Applied '$template_name' template"
+
+    if test_prompt_hook "$prompt_path"; then
         log_success "Hook test passed"
     fi
 
-    # Ensure settings.json is configured
     log_step "Updating settings.json..."
     local settings_file="${settings_dir}/settings.json"
-    local hook_path_for_settings
     local default_hook_dir="$HOME/.local/bin"
+    local precompact_for_settings prompt_for_settings
     if [[ "$hook_dir" == "$default_hook_dir" ]]; then
-        # Use $HOME for portability when using default location
-        hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
+        precompact_for_settings="\$HOME/.local/bin/${PRECOMPACT_SCRIPT}"
+        prompt_for_settings="\$HOME/.local/bin/${PROMPT_SCRIPT}"
     else
-        # Use absolute path for custom HOOK_DIR
-        hook_path_for_settings="$script_path"
+        precompact_for_settings="$precompact_path"
+        prompt_for_settings="$prompt_path"
     fi
-    add_hook_to_settings "$settings_file" "$hook_path_for_settings" "false" > /dev/null
+    add_hooks_to_settings "$settings_file" "$precompact_for_settings" "$prompt_for_settings" "false" > /dev/null
     log_success "Settings updated"
 
     echo ""
@@ -1647,7 +1786,6 @@ do_message() {
     local settings_dir="$4"
     local dry_run="$5"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
     local chosen_message=""
 
     case "$message_type" in
@@ -1667,7 +1805,6 @@ do_message() {
             ;;
     esac
 
-    # Trim a single trailing newline for cleaner formatting
     chosen_message="${chosen_message%$'\n'}"
 
     if [[ -z "$chosen_message" ]]; then
@@ -1683,7 +1820,7 @@ do_message() {
     fi
 
     if [[ "$dry_run" == "true" ]]; then
-        log_step "[dry-run] Would create $script_path with custom message"
+        log_step "[dry-run] Would create hook scripts with custom message"
         echo ""
         echo -e "${WHITE}${BOLD}Preview:${NC}"
         echo ""
@@ -1695,25 +1832,34 @@ do_message() {
 
     mkdir -p "$hook_dir"
     mkdir -p "$settings_dir"
+    mkdir -p "$MARKER_DIR"
 
-    render_hook_script "$chosen_message" "Custom message" > "$script_path"
-    chmod +x "$script_path"
-    log_success "Created $script_path"
+    local precompact_path="${hook_dir}/${PRECOMPACT_SCRIPT}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
+
+    generate_precompact_script > "$precompact_path"
+    chmod +x "$precompact_path"
+
+    render_prompt_script "$chosen_message" "Custom message" > "$prompt_path"
+    chmod +x "$prompt_path"
+    log_success "Created hook scripts"
 
     log_step "Updating settings.json..."
     local settings_file="${settings_dir}/settings.json"
-    local hook_path_for_settings
     local default_hook_dir="$HOME/.local/bin"
+    local precompact_for_settings prompt_for_settings
     if [[ "$hook_dir" == "$default_hook_dir" ]]; then
-        hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
+        precompact_for_settings="\$HOME/.local/bin/${PRECOMPACT_SCRIPT}"
+        prompt_for_settings="\$HOME/.local/bin/${PROMPT_SCRIPT}"
     else
-        hook_path_for_settings="$script_path"
+        precompact_for_settings="$precompact_path"
+        prompt_for_settings="$prompt_path"
     fi
-    add_hook_to_settings "$settings_file" "$hook_path_for_settings" "false" > /dev/null
+    add_hooks_to_settings "$settings_file" "$precompact_for_settings" "$prompt_for_settings" "false" > /dev/null
     log_success "Settings updated"
 
     log_step "Testing hook..."
-    if test_hook "$script_path"; then
+    if test_prompt_hook "$prompt_path"; then
         log_success "Hook test passed"
     else
         log_warn "Hook test inconclusive"
@@ -1768,21 +1914,6 @@ do_changelog() {
     echo -e "  ${GREEN}${BOLD}v1.2.4${NC}"
     echo -e "  ${DIM}$CHANGELOG_1_2_4${NC}"
     echo ""
-    echo -e "  ${GREEN}${BOLD}v1.2.3${NC}"
-    echo -e "  ${DIM}$CHANGELOG_1_2_3${NC}"
-    echo ""
-    echo -e "  ${GREEN}${BOLD}v1.2.2${NC}"
-    echo -e "  ${DIM}$CHANGELOG_1_2_2${NC}"
-    echo ""
-    echo -e "  ${GREEN}${BOLD}v1.2.1${NC}"
-    echo -e "  ${DIM}$CHANGELOG_1_2_1${NC}"
-    echo ""
-    echo -e "  ${GREEN}${BOLD}v1.2.0${NC}"
-    echo -e "  ${DIM}$CHANGELOG_1_2_0${NC}"
-    echo ""
-    echo -e "  ${GREEN}${BOLD}v1.1.0${NC}"
-    echo -e "  ${DIM}$CHANGELOG_1_1_0${NC}"
-    echo ""
     echo -e "  ${CYAN}${BOLD}v1.0.0${NC}"
     echo -e "  ${DIM}$CHANGELOG_1_0_0${NC}"
     echo ""
@@ -1794,8 +1925,6 @@ do_changelog() {
 do_update() {
     local dry_run="$1"
 
-    # Note: banner already printed by main()
-
     log_info "Checking for updates..."
 
     if ! command -v curl &> /dev/null; then
@@ -1803,11 +1932,9 @@ do_update() {
         return 1
     fi
 
-    # Cache-busting query param to defeat CDN caching
     local cache_bust
     cache_bust="?t=$(date +%s)"
 
-    # Try to get latest version from GitHub Releases API first
     local remote_version=""
     local use_releases="false"
     local release_info
@@ -1821,7 +1948,6 @@ do_update() {
         fi
     fi
 
-    # Fallback: fetch from raw GitHub URL to check version
     local remote_script=""
     if [[ -z "$remote_version" ]]; then
         log_verbose "Releases API unavailable, falling back to raw URL"
@@ -1857,7 +1983,6 @@ do_update() {
         return 0
     fi
 
-    # Confirm unless --yes
     if [[ "$YES_FLAG" != "true" ]]; then
         require_tty "Use --yes to auto-confirm updates." || return 1
         echo -n "Update to $remote_version? [y/N]: "
@@ -1868,7 +1993,6 @@ do_update() {
         fi
     fi
 
-    # Get the path to this script (avoid overwriting the wrong file)
     local this_script=""
     local source_name="${BASH_SOURCE[0]:-}"
     local candidate=""
@@ -1886,7 +2010,7 @@ do_update() {
     fi
 
     if [[ -z "$this_script" ]]; then
-        candidate=$(command -v install-post-compact-reminder.sh 2>/dev/null || true)
+        candidate=$(command -v install-post-compact-reminder-workaround.sh 2>/dev/null || true)
         if [[ -n "$candidate" && -f "$candidate" ]]; then
             this_script="$candidate"
         fi
@@ -1904,17 +2028,15 @@ do_update() {
         return 1
     fi
 
-    # Download the new version
     local tmp_script
-    tmp_script=$(mktemp "${TMPDIR:-/tmp}/post-compact-reminder-update.XXXXXX")
+    tmp_script=$(mktemp "${TMPDIR:-/tmp}/post-compact-reminder-workaround-update.XXXXXX")
     local tmp_rm
     tmp_rm=$(printf "rm -f %q" "$tmp_script")
     append_exit_trap "$tmp_rm"
 
     if [[ "$use_releases" == "true" ]]; then
-        # Download from GitHub Releases
-        local release_url="${GITHUB_RELEASES_URL}/download/v${remote_version}/install-post-compact-reminder.sh"
-        local checksum_url="${GITHUB_RELEASES_URL}/download/v${remote_version}/install-post-compact-reminder.sh.sha256"
+        local release_url="${GITHUB_RELEASES_URL}/download/v${remote_version}/install-post-compact-reminder-workaround.sh"
+        local checksum_url="${GITHUB_RELEASES_URL}/download/v${remote_version}/install-post-compact-reminder-workaround.sh.sha256"
 
         log_step "Downloading v${remote_version} from GitHub Releases..."
         curl -fsSL "${release_url}${cache_bust}" -o "$tmp_script" 2>/dev/null || {
@@ -1923,9 +2045,9 @@ do_update() {
             return 1
         }
 
-        # Verify SHA256 checksum
         local expected_checksum
-        expected_checksum=$(curl -fsSL "${checksum_url}${cache_bust}" 2>/dev/null) || true
+        # Extract just the checksum (handles both raw format and "checksum  filename" format)
+        expected_checksum=$(curl -fsSL "${checksum_url}${cache_bust}" 2>/dev/null | awk '{print $1}') || true
 
         if [[ -n "$expected_checksum" ]]; then
             local actual_checksum=""
@@ -1952,11 +2074,9 @@ do_update() {
             log_warn "Checksum file not found; skipping verification"
         fi
     else
-        # Fallback: use the already-fetched script from raw URL
         echo "$remote_script" > "$tmp_script"
     fi
 
-    # Validate bash syntax before replacing
     if ! bash -n "$tmp_script" 2>/dev/null; then
         log_error "Downloaded script has syntax errors! Aborting update."
         rm -f "$tmp_script"
@@ -1964,7 +2084,6 @@ do_update() {
     fi
     log_verbose "Bash syntax validation passed"
 
-    # Verify the downloaded script has a VERSION string
     local downloaded_version
     downloaded_version=$(grep -m1 '^VERSION=' "$tmp_script" | cut -d'"' -f2)
     if [[ -z "$downloaded_version" ]]; then
@@ -1973,11 +2092,9 @@ do_update() {
         return 1
     fi
 
-    # Create backup
     cp "$this_script" "${this_script}.bak"
     log_verbose "Backup created at ${this_script}.bak"
 
-    # Atomic replacement: copy to temp in same dir, then mv (preserves inode on rename)
     local tmp_dest
     tmp_dest=$(mktemp "${this_script}.tmp.XXXXXX")
     cp "$tmp_script" "$tmp_dest"
@@ -1987,7 +2104,7 @@ do_update() {
 
     log_success "Updated to version $remote_version"
     echo ""
-    echo -e "${YELLOW}Run the installer again to update the hook script.${NC}"
+    echo -e "${YELLOW}Run the installer again to update the hook scripts.${NC}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1999,10 +2116,10 @@ do_completions() {
     case "$shell_type" in
         bash)
             cat << 'BASH_COMPLETIONS'
-# Bash completions for install-post-compact-reminder.sh
+# Bash completions for install-post-compact-reminder-workaround.sh
 # Add to ~/.bashrc or /etc/bash_completion.d/
 
-_post_compact_reminder() {
+_post_compact_reminder_workaround() {
     local cur prev opts
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
@@ -2032,19 +2149,19 @@ _post_compact_reminder() {
     COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
 }
 
-complete -F _post_compact_reminder install-post-compact-reminder.sh
-complete -F _post_compact_reminder ./install-post-compact-reminder.sh
+complete -F _post_compact_reminder_workaround install-post-compact-reminder-workaround.sh
+complete -F _post_compact_reminder_workaround ./install-post-compact-reminder-workaround.sh
 BASH_COMPLETIONS
             ;;
 
         zsh)
             cat << 'ZSH_COMPLETIONS'
-#compdef install-post-compact-reminder.sh
+#compdef install-post-compact-reminder-workaround.sh
 
-# Zsh completions for install-post-compact-reminder.sh
+# Zsh completions for install-post-compact-reminder-workaround.sh
 # Add to ~/.zshrc or place in your fpath
 
-_install_post_compact_reminder() {
+_install_post_compact_reminder_workaround() {
     local -a opts
     opts=(
         '--help[Show help message]::'
@@ -2053,8 +2170,8 @@ _install_post_compact_reminder() {
         '-v[Show version number]::'
         '--dry-run[Preview changes without modifying]::'
         '-n[Preview changes without modifying]::'
-        '--uninstall[Remove the hook]::'
-        '--remove[Remove the hook]::'
+        '--uninstall[Remove the hooks]::'
+        '--remove[Remove the hooks]::'
         '--repair[Repair installation and sync settings]::'
         '--sync[Repair installation and sync settings]::'
         '--force[Reinstall even if already installed]::'
@@ -2095,7 +2212,7 @@ _install_post_compact_reminder() {
     _arguments -s $opts
 }
 
-_install_post_compact_reminder "$@"
+_install_post_compact_reminder_workaround "$@"
 ZSH_COMPLETIONS
             ;;
 
@@ -2116,7 +2233,8 @@ do_repair() {
     local settings_dir="$2"
     local dry_run="$3"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
+    local precompact_path="${hook_dir}/${PRECOMPACT_SCRIPT}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
     local settings_file="${settings_dir}/settings.json"
 
     if ! require_python_for_settings "$dry_run"; then
@@ -2129,47 +2247,74 @@ do_repair() {
     if [[ "$dry_run" != "true" ]]; then
         mkdir -p "$hook_dir"
         mkdir -p "$settings_dir"
+        mkdir -p "$MARKER_DIR"
     fi
 
-    if [[ -f "$script_path" ]]; then
+    # Repair PreCompact script
+    if [[ -f "$precompact_path" ]]; then
         if [[ "$dry_run" == "true" ]]; then
-            log_step "[dry-run] Would ensure $script_path is executable"
+            log_step "[dry-run] Would ensure $precompact_path is executable"
         else
-            if [[ ! -x "$script_path" ]]; then
-                chmod +x "$script_path"
-                log_success "Fixed executable bit on $script_path"
+            if [[ ! -x "$precompact_path" ]]; then
+                chmod +x "$precompact_path"
+                log_success "Fixed executable bit on $precompact_path"
             else
-                log_skip "Hook script already present and executable"
+                log_skip "PreCompact script already present and executable"
             fi
         fi
     else
         if [[ "$dry_run" == "true" ]]; then
-            log_step "[dry-run] Would create $script_path"
+            log_step "[dry-run] Would create $precompact_path"
         else
-            log_step "Creating hook script..."
-            generate_hook_script > "$script_path"
-            chmod +x "$script_path"
-            log_success "Created $script_path"
+            log_step "Creating PreCompact hook script..."
+            generate_precompact_script > "$precompact_path"
+            chmod +x "$precompact_path"
+            log_success "Created $precompact_path"
+        fi
+    fi
+
+    # Repair UserPromptSubmit script
+    if [[ -f "$prompt_path" ]]; then
+        if [[ "$dry_run" == "true" ]]; then
+            log_step "[dry-run] Would ensure $prompt_path is executable"
+        else
+            if [[ ! -x "$prompt_path" ]]; then
+                chmod +x "$prompt_path"
+                log_success "Fixed executable bit on $prompt_path"
+            else
+                log_skip "UserPromptSubmit script already present and executable"
+            fi
+        fi
+    else
+        if [[ "$dry_run" == "true" ]]; then
+            log_step "[dry-run] Would create $prompt_path"
+        else
+            log_step "Creating UserPromptSubmit hook script..."
+            generate_prompt_script > "$prompt_path"
+            chmod +x "$prompt_path"
+            log_success "Created $prompt_path"
         fi
     fi
 
     log_step "Synchronizing settings.json..."
-    local hook_path_for_settings
     local default_hook_dir="$HOME/.local/bin"
+    local precompact_for_settings prompt_for_settings
     if [[ "$hook_dir" == "$default_hook_dir" ]]; then
-        hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
+        precompact_for_settings="\$HOME/.local/bin/${PRECOMPACT_SCRIPT}"
+        prompt_for_settings="\$HOME/.local/bin/${PROMPT_SCRIPT}"
     else
-        hook_path_for_settings="$script_path"
+        precompact_for_settings="$precompact_path"
+        prompt_for_settings="$prompt_path"
     fi
-    add_hook_to_settings "$settings_file" "$hook_path_for_settings" "$dry_run" > /dev/null
+    add_hooks_to_settings "$settings_file" "$precompact_for_settings" "$prompt_for_settings" "$dry_run" > /dev/null
 
     if [[ "$dry_run" != "true" ]]; then
         log_success "Settings synchronized"
     fi
 
-    if [[ "$dry_run" != "true" && -x "$script_path" ]]; then
+    if [[ "$dry_run" != "true" && -x "$prompt_path" ]]; then
         log_step "Testing hook..."
-        if test_hook "$script_path"; then
+        if test_prompt_hook "$prompt_path"; then
             log_success "Hook test passed"
         else
             log_warn "Hook test inconclusive"
@@ -2189,12 +2334,13 @@ do_install() {
     local dry_run="$3"
     local force="$4"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
+    local precompact_path="${hook_dir}/${PRECOMPACT_SCRIPT}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
     local settings_file="${settings_dir}/settings.json"
 
     # Check existing installation
     local installed_version
-    installed_version=$(get_installed_version "$script_path")
+    installed_version=$(get_installed_version "$prompt_path")
 
     if [[ -n "$installed_version" && "$force" != "true" ]]; then
         if [[ "$installed_version" == "$VERSION" ]]; then
@@ -2202,13 +2348,13 @@ do_install() {
             if [[ "$HAS_PYTHON" != "true" ]]; then
                 log_warn "python3 not found; skipping settings.json inspection"
             else
-                if check_settings_has_hook "$settings_file"; then
-                    log_skip "Hook already configured in settings.json"
+                if check_settings_has_hooks "$settings_file"; then
+                    log_skip "Hooks already configured in settings.json"
                     echo ""
                     log_success "Nothing to do. Use --force to reinstall."
                     return 0
                 else
-                    log_warn "Script exists but settings.json needs updating"
+                    log_warn "Scripts exist but settings.json needs updating"
                 fi
             fi
         else
@@ -2224,47 +2370,57 @@ do_install() {
     if [[ "$dry_run" != "true" ]]; then
         mkdir -p "$hook_dir"
         mkdir -p "$settings_dir"
+        mkdir -p "$MARKER_DIR"
     fi
 
-    # Install hook script
+    # Install PreCompact script
     if [[ "$dry_run" == "true" ]]; then
-        log_step "[dry-run] Would create $script_path"
+        log_step "[dry-run] Would create $precompact_path"
     else
-        log_step "Creating hook script..."
-        generate_hook_script > "$script_path"
-        chmod +x "$script_path"
-        log_success "Created $script_path"
+        log_step "Creating PreCompact hook script..."
+        generate_precompact_script > "$precompact_path"
+        chmod +x "$precompact_path"
+        log_success "Created $precompact_path"
+    fi
+
+    # Install UserPromptSubmit script
+    if [[ "$dry_run" == "true" ]]; then
+        log_step "[dry-run] Would create $prompt_path"
+    else
+        log_step "Creating UserPromptSubmit hook script..."
+        generate_prompt_script > "$prompt_path"
+        chmod +x "$prompt_path"
+        log_success "Created $prompt_path"
     fi
 
     # Update settings.json
-    # Note: We use $HOME in settings.json for portability, but only if using default HOOK_DIR
     log_step "Updating settings.json..."
-    local hook_path_for_settings
     local default_hook_dir="$HOME/.local/bin"
+    local precompact_for_settings prompt_for_settings
     if [[ "$hook_dir" == "$default_hook_dir" ]]; then
-        # Use $HOME for portability when using default location
-        hook_path_for_settings="\$HOME/.local/bin/${SCRIPT_NAME}"
+        precompact_for_settings="\$HOME/.local/bin/${PRECOMPACT_SCRIPT}"
+        prompt_for_settings="\$HOME/.local/bin/${PROMPT_SCRIPT}"
     else
-        # Use absolute path for custom HOOK_DIR
-        hook_path_for_settings="$script_path"
+        precompact_for_settings="$precompact_path"
+        prompt_for_settings="$prompt_path"
     fi
     local result
-    result=$(add_hook_to_settings "$settings_file" "$hook_path_for_settings" "$dry_run")
+    result=$(add_hooks_to_settings "$settings_file" "$precompact_for_settings" "$prompt_for_settings" "$dry_run")
 
     if [[ "$dry_run" != "true" ]]; then
         if [[ "$result" == "added" ]]; then
-            log_success "Added SessionStart hook with matcher: compact"
+            log_success "Added PreCompact and UserPromptSubmit hooks"
         elif [[ "$result" == "updated" ]]; then
-            log_success "Updated SessionStart hook configuration"
+            log_success "Updated hook configuration"
         else
-            log_skip "Hook already present in settings.json"
+            log_skip "Hooks already present in settings.json"
         fi
     fi
 
     # Test the hook
     if [[ "$dry_run" != "true" ]]; then
         log_step "Testing hook..."
-        if test_hook "$script_path"; then
+        if test_prompt_hook "$prompt_path"; then
             log_success "Hook test passed"
         else
             log_error "Hook test failed"
@@ -2283,18 +2439,21 @@ do_uninstall() {
     local settings_dir="$2"
     local dry_run="$3"
 
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
+    local precompact_path="${hook_dir}/${PRECOMPACT_SCRIPT}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
     local settings_file="${settings_dir}/settings.json"
 
-    log_info "Uninstalling post-compact-reminder..."
+    log_info "Uninstalling workaround hooks..."
     echo ""
 
-    # Confirmation prompt (skip if --yes or --dry-run)
+    # Confirmation prompt
     if [[ "$YES_FLAG" != "true" ]] && [[ "$dry_run" != "true" ]]; then
         require_tty "Use --yes to skip confirmation." || return 1
         echo -e "${YELLOW}This will remove:${NC}"
-        [[ -f "$script_path" ]] && echo -e "  ${DIM}${BULLET}${NC} $script_path"
-        [[ -f "$settings_file" ]] && echo -e "  ${DIM}${BULLET}${NC} Hook entry from $settings_file"
+        [[ -f "$precompact_path" ]] && echo -e "  ${DIM}${BULLET}${NC} $precompact_path"
+        [[ -f "$prompt_path" ]] && echo -e "  ${DIM}${BULLET}${NC} $prompt_path"
+        [[ -d "$MARKER_DIR" ]] && echo -e "  ${DIM}${BULLET}${NC} $MARKER_DIR"
+        [[ -f "$settings_file" ]] && echo -e "  ${DIM}${BULLET}${NC} Hook entries from $settings_file"
         echo ""
         echo -n -e "${BOLD}Are you sure you want to uninstall? [y/N]${NC} "
         read -r response
@@ -2305,16 +2464,28 @@ do_uninstall() {
         echo ""
     fi
 
-    # Remove script
-    if [[ -f "$script_path" ]]; then
-        if [[ "$dry_run" == "true" ]]; then
-            log_step "[dry-run] Would remove $script_path"
+    # Remove scripts
+    for script in "$precompact_path" "$prompt_path"; do
+        if [[ -f "$script" ]]; then
+            if [[ "$dry_run" == "true" ]]; then
+                log_step "[dry-run] Would remove $script"
+            else
+                rm -f "$script"
+                log_success "Removed $script"
+            fi
         else
-            rm -f "$script_path"
-            log_success "Removed $script_path"
+            log_skip "Script not found at $script"
         fi
-    else
-        log_skip "Script not found at $script_path"
+    done
+
+    # Remove marker directory
+    if [[ -d "$MARKER_DIR" ]]; then
+        if [[ "$dry_run" == "true" ]]; then
+            log_step "[dry-run] Would remove $MARKER_DIR"
+        else
+            rm -rf "$MARKER_DIR"
+            log_success "Removed marker directory"
+        fi
     fi
 
     # Remove from settings
@@ -2322,13 +2493,13 @@ do_uninstall() {
         if [[ "$HAS_PYTHON" != "true" ]]; then
             log_warn "python3 not found; skipping settings.json update"
         else
-            if check_settings_has_hook "$settings_file"; then
-                remove_hook_from_settings "$settings_file" "$dry_run"
+            if check_settings_has_hooks "$settings_file"; then
+                remove_hooks_from_settings "$settings_file" "$dry_run"
                 if [[ "$dry_run" != "true" ]]; then
-                    log_success "Removed hook from settings.json"
+                    log_success "Removed hooks from settings.json"
                 fi
             else
-                log_skip "Hook not found in settings.json"
+                log_skip "Hooks not found in settings.json"
             fi
         fi
     else
@@ -2351,7 +2522,7 @@ do_uninstall() {
 print_summary() {
     local dry_run="$1"
     local hook_dir="$2"
-    local script_path="${hook_dir}/${SCRIPT_NAME}"
+    local prompt_path="${hook_dir}/${PROMPT_SCRIPT}"
 
     echo ""
     if [[ "$dry_run" == "true" ]]; then
@@ -2360,13 +2531,19 @@ print_summary() {
         print_box "box" "" "${GREEN}${BOLD}" "${GREEN}${BOLD}" 62 " 🎉  Installation complete!"
     fi
     echo ""
-    echo -e "  ${WHITE}${BOLD}${UNDERLINE}👁️  What Claude sees after compaction:${NC}"
+    echo -e "  ${WHITE}${BOLD}${UNDERLINE}🔄 How the workaround works:${NC}"
+    echo ""
+    echo -e "    1. ${GREEN}PreCompact${NC} writes a marker file when compaction happens"
+    echo -e "    2. ${GREEN}UserPromptSubmit${NC} checks for marker on your next message"
+    echo -e "    3. If marker exists, injects reminder and deletes marker"
+    echo ""
+    echo -e "  ${WHITE}${BOLD}${UNDERLINE}👁️  What Claude sees after compaction (on next prompt):${NC}"
     echo ""
     local -a message_lines
     if [[ "$dry_run" == "true" ]]; then
         mapfile -t message_lines < <(split_lines "$TEMPLATE_DEFAULT")
     else
-        mapfile -t message_lines < <(get_rendered_message_lines "$script_path")
+        mapfile -t message_lines < <(get_rendered_message_lines "$prompt_path")
         if [[ ${#message_lines[@]} -eq 0 ]]; then
             mapfile -t message_lines < <(split_lines "$TEMPLATE_DEFAULT")
         fi
@@ -2375,34 +2552,24 @@ print_summary() {
     echo ""
 
     if [[ "$dry_run" != "true" ]]; then
-        echo -e "  ${YELLOW}${ICON_ZAP} ${ITALIC}Restart Claude Code for the hook to take effect.${NC}"
+        echo -e "  ${YELLOW}${ICON_ZAP} ${ITALIC}Restart Claude Code for the hooks to take effect.${NC}"
         echo ""
 
-        # Customization section
         echo -e "  ${WHITE}${BOLD}${UNDERLINE}🎨 Customizing the reminder:${NC}"
         echo ""
-        echo -e "  The reminder message can be easily customized to fit your workflow."
-        echo -e "  Use the CLI to update the message without editing files."
+        echo -e "  ${CYAN}${BOLD}Option 1:${NC} Update interactively"
         echo ""
-        echo -e "  ${CYAN}${BOLD}Step 1:${NC} Update the reminder message"
+        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder-workaround.sh --update-reminder-message${NC}"
         echo ""
-        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder.sh --update-reminder-message${NC}"
-        echo -e "    ${DIM}${ITALIC}  Finish with a line containing .done (or Ctrl-D).${NC}"
+        echo -e "  ${CYAN}${BOLD}Option 2:${NC} Set inline"
         echo ""
-        echo -e "  ${CYAN}${BOLD}Step 2:${NC} Or set it inline"
+        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder-workaround.sh --update-reminder-message \"Your message here\"${NC}"
         echo ""
-        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder.sh --update-reminder-message \"Context compacted. Re-read AGENTS.md.\"${NC}"
+        echo -e "  ${CYAN}${BOLD}Option 3:${NC} Load from file"
         echo ""
-        echo -e "  ${CYAN}${BOLD}Step 3:${NC} Or load from a file"
-        echo ""
-        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder.sh --update-reminder-message-file ./reminder.txt${NC}"
-        echo ""
-        echo -e "  ${CYAN}${BOLD}Step 4:${NC} Test your changes"
-        echo ""
-        echo -e "    ${WHITE}\$ ${GREEN}echo '{\"source\":\"compact\"}' | ~/.local/bin/claude-post-compact-reminder${NC}"
+        echo -e "    ${WHITE}\$ ${GREEN}./install-post-compact-reminder-workaround.sh --update-reminder-message-file ./reminder.txt${NC}"
         echo ""
         echo -e "  ${DIM}${ITALIC}Tip: Changes take effect immediately ${EM_DASH} no restart needed for the hook itself.${NC}"
-        echo -e "  ${DIM}${ITALIC}     Claude Code only needs restarting after the initial installation.${NC}"
         echo ""
     fi
 }
@@ -2415,11 +2582,11 @@ main() {
     local dry_run="false"
     local uninstall="false"
     local force="false"
-    local action=""  # Track which standalone action to perform
-    local action_arg=""  # Argument for the action (if needed)
-    local action_arg_type=""  # Argument type for the action (if needed)
+    local action=""
+    local action_arg=""
+    local action_arg_type=""
 
-    # Parse arguments (using while + shift for flags with values)
+    # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
             # Help and version
@@ -2428,7 +2595,7 @@ main() {
                 exit 0
                 ;;
             --version|-v)
-                echo "post-compact-reminder v${VERSION}"
+                echo "post-compact-reminder-workaround v${VERSION}"
                 exit 0
                 ;;
 
@@ -2667,6 +2834,7 @@ main() {
 
     log_info "Hook directory: ${hook_dir}"
     log_info "Settings directory: ${settings_dir}"
+    log_info "Marker directory: ${MARKER_DIR}"
     log_verbose "Dry run: $dry_run, Force: $force, Uninstall: $uninstall"
     echo ""
 
