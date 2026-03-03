@@ -992,7 +992,9 @@ get_rendered_message_lines() {
         "${cmd[@]}" 2>/dev/null || true)
 
     local -a lines=()
-    mapfile -t lines < <(extract_message_lines "$output")
+    while IFS= read -r line; do
+        lines+=("$line")
+    done < <(extract_message_lines "$output")
     if [[ ${#lines[@]} -eq 0 ]]; then
         printf '%s\n' "$TEMPLATE_DEFAULT"
         return 1
@@ -1475,7 +1477,10 @@ do_interactive() {
     echo -e "${WHITE}${BOLD}Preview:${NC}"
     echo ""
     local -a message_lines
-    mapfile -t message_lines < <(split_lines "$chosen_message")
+    message_lines=()
+    while IFS= read -r line; do
+        message_lines+=("$line")
+    done < <(split_lines "$chosen_message")
     print_box "box" "  " "${MAGENTA}" "" 57 "${message_lines[@]}"
     echo ""
 
@@ -1565,7 +1570,10 @@ do_show_template() {
     echo ""
 
     local -a message_lines
-    mapfile -t message_lines < <(get_rendered_message_lines "$script_path")
+    message_lines=()
+    while IFS= read -r line; do
+        message_lines+=("$line")
+    done < <(get_rendered_message_lines "$script_path")
     print_box "box" "  " "${MAGENTA}" "" 57 "${message_lines[@]}"
 
     echo ""
@@ -2377,12 +2385,20 @@ print_summary() {
     echo -e "  ${WHITE}${BOLD}${UNDERLINE}👁️  What Claude sees after compaction:${NC}"
     echo ""
     local -a message_lines
+    message_lines=()
     if [[ "$dry_run" == "true" ]]; then
-        mapfile -t message_lines < <(split_lines "$TEMPLATE_DEFAULT")
+        while IFS= read -r line; do
+            message_lines+=("$line")
+        done < <(split_lines "$TEMPLATE_DEFAULT")
     else
-        mapfile -t message_lines < <(get_rendered_message_lines "$script_path")
+        while IFS= read -r line; do
+            message_lines+=("$line")
+        done < <(get_rendered_message_lines "$script_path")
         if [[ ${#message_lines[@]} -eq 0 ]]; then
-            mapfile -t message_lines < <(split_lines "$TEMPLATE_DEFAULT")
+            message_lines=()
+            while IFS= read -r line; do
+                message_lines+=("$line")
+            done < <(split_lines "$TEMPLATE_DEFAULT")
         fi
     fi
     print_box "box" "  " "${MAGENTA}" "" 57 "${message_lines[@]}"
