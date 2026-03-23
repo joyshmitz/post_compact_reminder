@@ -8,7 +8,6 @@
 
 **Stop Claude from forgetting your project rules after context compaction.**
 
-[![CI](https://github.com/Dicklesworthstone/post_compact_reminder/actions/workflows/ci.yml/badge.svg)](https://github.com/Dicklesworthstone/post_compact_reminder/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-blue.svg)](./LICENSE)
 [![Bash 4.0+](https://img.shields.io/badge/bash-4.0%2B-blue?style=flat-square)](https://www.gnu.org/software/bash/)
 
