@@ -62,19 +62,18 @@ append_exit_trap() {
     fi
 }
 
-# Acquire lock to prevent concurrent runs
+# Acquire lock to prevent concurrent runs.
+# Uses flock(1) for atomic lock acquisition, eliminating the TOCTOU race
+# condition that existed with the previous PID-file approach.
 acquire_lock() {
-    if [[ -f "$LOCK_FILE" ]]; then
-        local pid
-        pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            echo "Another instance is running (PID: $pid). Exiting." >&2
-            exit 1
-        fi
-        # Stale lock file, remove it
-        rm -f "$LOCK_FILE"
+    # Open lock file descriptor (9) for flock
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        echo "Another instance is running. Exiting." >&2
+        exit 1
     fi
-    echo $$ > "$LOCK_FILE"
+    # Lock acquired; write PID for diagnostics (not used for locking)
+    echo $$ >&9
 }
 
 # -----------------------------------------------------------------------------
