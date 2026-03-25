@@ -45,7 +45,10 @@ CHANGELOG_1_0_0="Initial release with basic install/uninstall, dry-run, force re
 # Cleanup and error handling
 # -----------------------------------------------------------------------------
 cleanup() {
-    rm -f "$LOCK_FILE" 2>/dev/null || true
+    # Lock file is NOT removed here — flock is held on fd 9 and automatically
+    # released when the process exits. Removing the file would allow a new
+    # process to create a different inode and bypass the lock.
+    :
 }
 # Trap moved to main() to allow sourcing for tests
 
