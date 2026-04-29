@@ -1838,7 +1838,7 @@ do_update() {
     release_info=$(curl -fsSL "${GITHUB_API_URL}${cache_bust}" 2>/dev/null) || true
 
     if [[ -n "$release_info" ]]; then
-        remote_version=$(echo "$release_info" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/^v//')
+        remote_version=$(grep -o -m1 '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]*"' <<< "$release_info" | cut -d'"' -f4 | sed 's/^v//') || remote_version=""
         if [[ -n "$remote_version" ]]; then
             use_releases="true"
             log_verbose "Found release version via API: $remote_version"
@@ -1853,7 +1853,7 @@ do_update() {
             log_error "Failed to fetch from GitHub"
             return 1
         }
-        remote_version=$(echo "$remote_script" | grep -m1 '^VERSION=' | cut -d'"' -f2)
+        remote_version=$(grep -m1 '^VERSION=' <<< "$remote_script" | cut -d'"' -f2) || remote_version=""
     fi
 
     if [[ -z "$remote_version" ]]; then
@@ -1990,7 +1990,7 @@ do_update() {
 
     # Verify the downloaded script has a VERSION string
     local downloaded_version
-    downloaded_version=$(grep -m1 '^VERSION=' "$tmp_script" | cut -d'"' -f2)
+    downloaded_version=$(grep -m1 '^VERSION=' "$tmp_script" | cut -d'"' -f2) || downloaded_version=""
     if [[ -z "$downloaded_version" ]]; then
         log_error "Downloaded script is missing VERSION string! Aborting update."
         rm -f "$tmp_script"

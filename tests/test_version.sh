@@ -39,5 +39,38 @@ assert_contains "$OUTPUT" "v1.0.0" "Changelog should contain v1.0.0"
 # Check for descriptions
 assert_contains "$OUTPUT" "Added --message" "Changelog should contain descriptions"
 
+echo "Testing do_update with large release metadata under pipefail..."
+
+UPDATE_OUTPUT=$(
+    bash -c '
+        set -euo pipefail
+        source "$1"
+        QUIET=false
+        VERBOSE=false
+        YES_FLAG=true
+        NO_UNICODE=true
+        apply_no_unicode
+        apply_no_color
+
+        curl() {
+            case "$*" in
+                *api.github.com*)
+                    printf "{\"tag_name\":\"v%s\",\"body\":\"" "$VERSION"
+                    for _ in $(seq 1 20000); do
+                        printf "x"
+                    done
+                    printf "\"}\n"
+                    ;;
+                *)
+                    return 22
+                    ;;
+            esac
+        }
+
+        do_update true
+    ' bash "$SCRIPT_DIR/../install-post-compact-reminder.sh"
+)
+assert_contains "$UPDATE_OUTPUT" "Already at latest version" "Large release metadata should not trip pipefail during update check"
+
 cleanup_test_env
 print_test_summary
