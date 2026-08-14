@@ -18,3 +18,8 @@ Thumbs.db
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# frankensqlite VFS namespace sidecars (do not match *.db / *.lock)
+.beads/beads.db-fsqlite-ns-*
+*-fsqlite-ns-gate
+*-fsqlite-ns-use

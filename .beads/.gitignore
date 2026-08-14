@@ -2,6 +2,10 @@
 *.db
 *.db-shm
 *.db-wal
+# frankensqlite VFS namespace sidecars (suffix after .db; not matched by *.db)
+beads.db-fsqlite-ns-*
+*-fsqlite-ns-gate
+*-fsqlite-ns-use
 
 # Lock files
 *.lock
